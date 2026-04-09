@@ -81,14 +81,58 @@ static char *do_convert(const char *text, size_t len, int options,
     if (wikilink_ext)
         cmark_syntax_extension_set_private(wikilink_ext, &state, NULL);
 
+    /* Pre-process: protect \[\[ from being parsed as wiki links.
+     *
+     * Problem: cmark converts \[ to literal [ and merges text nodes, so
+     * by postprocess time \[\[foo]] is indistinguishable from [[foo]].
+     *
+     * Solution: replace each \[ with U+E000 (Private Use Area char) before
+     * feeding to cmark. Our postprocessor converts U+E000 back to [ in all
+     * text nodes. Since U+E000 is not [, cmark won't create bracket
+     * structures from it, and our [[ scanner won't match it.
+     *
+     * U+E000 in UTF-8: 0xEE 0x80 0x80 (3 bytes replaces 2 bytes \[ )
+     */
+    char *preprocessed = NULL;
+    int needs_preprocess = 0;
+    for (size_t i = 0; i + 3 < len; i++) {
+        if (text[i] == '\\' && text[i+1] == '[' &&
+            text[i+2] == '\\' && text[i+3] == '[') {
+            needs_preprocess = 1;
+            break;
+        }
+    }
+
+    if (needs_preprocess) {
+        /* Only replace \[\[ (escaped wiki link opener), not bare \[ */
+        preprocessed = (char *)malloc(len * 2 + 1);
+        size_t j = 0;
+        for (size_t i = 0; i < len; i++) {
+            if (i + 3 < len &&
+                text[i] == '\\' && text[i+1] == '[' &&
+                text[i+2] == '\\' && text[i+3] == '[') {
+                /* Replace \[\[ with U+E000 U+E000 */
+                preprocessed[j++] = (char)0xEE;
+                preprocessed[j++] = (char)0x80;
+                preprocessed[j++] = (char)0x80;
+                preprocessed[j++] = (char)0xEE;
+                preprocessed[j++] = (char)0x80;
+                preprocessed[j++] = (char)0x80;
+                i += 3; /* skip \[\[ (4 chars, loop adds 1) */
+            } else {
+                preprocessed[j++] = text[i];
+            }
+        }
+        text = preprocessed;
+        len = j;
+    }
+
     /* Parse */
     cmark_parser_feed(parser, text, len);
     cmark_node *doc = cmark_parser_finish(parser);
 
-    /* NOTE: \[\[ backslash escaping doesn't work because cmark merges
-     * escaped brackets into literal text before our postprocessor runs.
-     * Use code spans (`[[not a link]]`) to prevent wiki link parsing.
-     * This is a known limitation of the postprocess-based approach. */
+    if (preprocessed)
+        free(preprocessed);
 
     /* Clear per-parse state */
     if (wikilink_ext)

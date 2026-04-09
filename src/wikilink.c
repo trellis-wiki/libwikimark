@@ -444,6 +444,66 @@ static void rewrite_wiki_style_links(cmark_node *root, cmark_mem *mem) {
     free(links);
 }
 
+/**
+ * Replace U+E000 (PUA sentinel for escaped brackets) back to '[' in a string.
+ * Returns a new string if replacements were made, or NULL if none found.
+ */
+static char *restore_escaped_brackets(const char *s, cmark_mem *mem) {
+    /* U+E000 in UTF-8: 0xEE 0x80 0x80 */
+    int found = 0;
+    size_t len = strlen(s);
+    for (size_t i = 0; i + 2 < len; i++) {
+        if ((unsigned char)s[i] == 0xEE &&
+            (unsigned char)s[i+1] == 0x80 &&
+            (unsigned char)s[i+2] == 0x80) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) return NULL;
+
+    /* Replace: 3 bytes -> 1 byte per occurrence */
+    char *result = (char *)mem->calloc(1, len + 1);
+    size_t j = 0;
+    for (size_t i = 0; i < len; ) {
+        if (i + 2 < len &&
+            (unsigned char)s[i] == 0xEE &&
+            (unsigned char)s[i+1] == 0x80 &&
+            (unsigned char)s[i+2] == 0x80) {
+            result[j++] = '[';
+            i += 3;
+        } else {
+            result[j++] = s[i++];
+        }
+    }
+    result[j] = '\0';
+    return result;
+}
+
+/**
+ * Restore escaped brackets in all text nodes throughout the AST.
+ * U+E000 sentinels (from preprocessing) are converted back to '['.
+ */
+static void restore_all_escaped_brackets(cmark_node *root, cmark_mem *mem) {
+    cmark_iter *iter = cmark_iter_new(root);
+    cmark_event_type ev_type;
+
+    while ((ev_type = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+        cmark_node *node = cmark_iter_get_node(iter);
+        if (ev_type == CMARK_EVENT_ENTER && node->type == CMARK_NODE_TEXT) {
+            const char *lit = cmark_node_get_literal(node);
+            if (lit) {
+                char *restored = restore_escaped_brackets(lit, mem);
+                if (restored) {
+                    cmark_node_set_literal(node, restored);
+                    mem->free(restored);
+                }
+            }
+        }
+    }
+    cmark_iter_free(iter);
+}
+
 static cmark_node *postprocess(cmark_syntax_extension *ext,
                                 cmark_parser *parser, cmark_node *root) {
     cmark_iter *iter = cmark_iter_new(root);
@@ -497,6 +557,13 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
      * paths (/, ./, ../) are left as standard links.
      */
     rewrite_wiki_style_links(root, mem);
+
+    /* --- Pass 3: Restore escaped brackets ---
+     * Convert U+E000 sentinels (from \[ preprocessing) back to literal '['.
+     * This runs AFTER wiki link detection so escaped brackets don't trigger
+     * wiki link parsing, but appear as literal [ in the final output.
+     */
+    restore_all_escaped_brackets(root, mem);
 
     return root;
 }
