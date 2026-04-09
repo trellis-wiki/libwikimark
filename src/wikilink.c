@@ -19,34 +19,12 @@
 #include <cmark-gfm-extension_api.h>
 #include <node.h>
 #include <parser.h>
-#include <render.h>
 
 #include <string.h>
 #include <stdlib.h>
 
 /* Node type — assigned at runtime */
 cmark_node_type CMARK_NODE_WM_WIKILINK;
-
-/* --- Opaque data for wiki link nodes (struct in wikilink.h) --- */
-
-static void wikilink_opaque_alloc(cmark_syntax_extension *ext,
-                                   cmark_mem *mem, cmark_node *node) {
-    if (node->type == CMARK_NODE_WM_WIKILINK) {
-        node->as.opaque = mem->calloc(1, sizeof(wikilink_data));
-    }
-}
-
-static void wikilink_opaque_free(cmark_syntax_extension *ext,
-                                  cmark_mem *mem, cmark_node *node) {
-    if (node->type == CMARK_NODE_WM_WIKILINK) {
-        wikilink_data *data = (wikilink_data *)node->as.opaque;
-        if (data) {
-            if (data->target) mem->free(data->target);
-            if (data->normalized) mem->free(data->normalized);
-            mem->free(data);
-        }
-    }
-}
 
 /* --- Forbidden characters in wiki link targets (spec §13.6) --- */
 
@@ -97,23 +75,72 @@ static int try_parse_wikilink(const char *s, int len, int pos,
 }
 
 /**
- * Create a wiki link node from the given target text.
+ * Build the display text for a wiki link target.
+ * Trims whitespace, collapses internal whitespace, replaces underscores with spaces.
+ * Returns a newly allocated string.
+ */
+static char *make_display_text(const char *target, int target_len, cmark_mem *mem) {
+    char *display = (char *)mem->calloc(1, target_len + 1);
+    const char *src = target;
+    const char *end = target + target_len;
+    char *dst = display;
+
+    /* Skip leading whitespace */
+    while (src < end && (*src == ' ' || *src == '\t')) src++;
+    /* Trim trailing whitespace */
+    while (end > src && (end[-1] == ' ' || end[-1] == '\t')) end--;
+
+    int prev_space = 0;
+    while (src < end) {
+        if (*src == ' ' || *src == '\t' || *src == '_') {
+            if (!prev_space) {
+                *dst++ = ' ';
+                prev_space = 1;
+            }
+        } else {
+            *dst++ = *src;
+            prev_space = 0;
+        }
+        src++;
+    }
+    *dst = '\0';
+    return display;
+}
+
+/**
+ * Create a wiki link as a standard CMARK_NODE_LINK.
+ *
+ * We use the standard link node type so it's accepted everywhere links are
+ * (including inside table cells, which have a hardcoded child type allowlist).
+ * The URL is set to the normalized wiki target.
  */
 static cmark_node *make_wikilink_node(cmark_syntax_extension *ext,
                                        cmark_mem *mem,
                                        const char *target, int target_len) {
-    cmark_node *node = cmark_node_new_with_mem(CMARK_NODE_WM_WIKILINK, mem);
-    cmark_node_set_syntax_extension(node, ext);
+    /* Copy target to null-terminated buffer */
+    char *target_buf = (char *)mem->calloc(1, target_len + 1);
+    memcpy(target_buf, target, target_len);
+    target_buf[target_len] = '\0';
 
-    wikilink_data *data = (wikilink_data *)mem->calloc(1, sizeof(wikilink_data));
-    data->target = (char *)mem->calloc(1, target_len + 1);
-    memcpy(data->target, target, target_len);
-    data->target[target_len] = '\0';
+    char *normalized = wikimark_normalize_title(target_buf, 0, mem);
+    if (!normalized) {
+        mem->free(target_buf);
+        return NULL;
+    }
 
-    data->normalized = wikimark_normalize_title(data->target, 0, mem);
+    cmark_node *link = cmark_node_new_with_mem(CMARK_NODE_LINK, mem);
+    cmark_node_set_url(link, normalized);
 
-    node->as.opaque = data;
-    return node;
+    /* Create display text child */
+    char *display = make_display_text(target, target_len, mem);
+    cmark_node *text = cmark_node_new_with_mem(CMARK_NODE_TEXT, mem);
+    cmark_node_set_literal(text, display);
+    cmark_node_append_child(link, text);
+
+    mem->free(target_buf);
+    mem->free(normalized);
+    mem->free(display);
+    return link;
 }
 
 /**
@@ -239,73 +266,11 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
     return root;
 }
 
-/* --- Rendering --- */
-
-static void html_render(cmark_syntax_extension *extension,
-                         cmark_html_renderer *renderer, cmark_node *node,
-                         cmark_event_type ev_type, int options) {
-    if (ev_type != CMARK_EVENT_ENTER)
-        return;
-
-    wikilink_data *data = (wikilink_data *)node->as.opaque;
-    if (!data)
-        return;
-
-    cmark_strbuf_puts(renderer->html, "<a href=\"");
-    if (data->normalized) {
-        cmark_strbuf_puts(renderer->html, data->normalized);
-    }
-    cmark_strbuf_puts(renderer->html, "\">");
-
-    /* Display text = target with whitespace normalized, underscores as spaces */
-    if (data->target) {
-        const char *p = data->target;
-        /* Skip leading whitespace */
-        while (*p == ' ' || *p == '\t') p++;
-        /* Find end, trim trailing whitespace */
-        const char *end = data->target + strlen(data->target);
-        while (end > p && (end[-1] == ' ' || end[-1] == '\t')) end--;
-
-        int prev_space = 0;
-        while (p < end) {
-            if (*p == ' ' || *p == '\t' || *p == '_') {
-                if (!prev_space) {
-                    cmark_strbuf_putc(renderer->html, ' ');
-                    prev_space = 1;
-                }
-            } else {
-                cmark_strbuf_putc(renderer->html, *p);
-                prev_space = 0;
-            }
-            p++;
-        }
-    }
-
-    cmark_strbuf_puts(renderer->html, "</a>");
-}
-
-static const char *get_type_string(cmark_syntax_extension *extension,
-                                    cmark_node *node) {
-    if (node->type == CMARK_NODE_WM_WIKILINK)
-        return "wikilink";
-    return "<unknown>";
-}
-
-static int can_contain(cmark_syntax_extension *extension, cmark_node *node,
-                        cmark_node_type child_type) {
-    return 0; /* Wiki links are leaf inline nodes */
-}
-
 /* --- Extension creation --- */
 
 cmark_syntax_extension *create_wikilink_extension(void) {
     cmark_syntax_extension *ext = cmark_syntax_extension_new("wikilink");
 
-    cmark_syntax_extension_set_get_type_string_func(ext, get_type_string);
-    cmark_syntax_extension_set_can_contain_func(ext, can_contain);
-    cmark_syntax_extension_set_html_render_func(ext, html_render);
-    cmark_syntax_extension_set_opaque_alloc_func(ext, wikilink_opaque_alloc);
-    cmark_syntax_extension_set_opaque_free_func(ext, wikilink_opaque_free);
     cmark_syntax_extension_set_postprocess_func(ext, postprocess);
 
     CMARK_NODE_WM_WIKILINK = cmark_syntax_extension_add_node(1); /* 1 = inline */
