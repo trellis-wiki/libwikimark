@@ -205,6 +205,61 @@ static char *do_convert(const char *text, size_t len, int options,
     wm_attach_attributes(doc, mem);
     wm_attach_annotations(doc, mem);
 
+    /* Standalone images → <figure>: if an image is the sole content of a
+     * paragraph (no surrounding text), wrap it in <figure><figcaption>. */
+    {
+        cmark_iter *fiter = cmark_iter_new(doc);
+        cmark_event_type fev;
+        cmark_node **fig_images = NULL;
+        int fig_count = 0, fig_cap = 0;
+
+        while ((fev = cmark_iter_next(fiter)) != CMARK_EVENT_DONE) {
+            cmark_node *node = cmark_iter_get_node(fiter);
+            if (fev == CMARK_EVENT_ENTER && node->type == CMARK_NODE_IMAGE) {
+                cmark_node *parent = cmark_node_parent(node);
+                if (parent && parent->type == CMARK_NODE_PARAGRAPH) {
+                    /* Is this image the sole content? */
+                    cmark_node *first = cmark_node_first_child(parent);
+                    cmark_node *next = cmark_node_next(node);
+                    if (first == node && (!next || (next->type == CMARK_NODE_SOFTBREAK && !cmark_node_next(next)))) {
+                        if (fig_count >= fig_cap) {
+                            fig_cap = fig_cap ? fig_cap * 2 : 8;
+                            fig_images = realloc(fig_images, fig_cap * sizeof(cmark_node *));
+                        }
+                        fig_images[fig_count++] = node;
+                    }
+                }
+            }
+        }
+        cmark_iter_free(fiter);
+
+        for (int fi = 0; fi < fig_count; fi++) {
+            cmark_node *img = fig_images[fi];
+            cmark_node *parent = cmark_node_parent(img);
+            if (!parent) continue;
+
+            const char *src = cmark_node_get_url(img);
+            const char *alt = "";
+            cmark_node *alt_node = cmark_node_first_child(img);
+            if (alt_node) alt = cmark_node_get_literal(alt_node);
+            if (!alt) alt = "";
+
+            size_t html_cap = strlen(src ? src : "") + strlen(alt) + 200;
+            char *html = (char *)malloc(html_cap);
+            snprintf(html, html_cap,
+                "<figure><img src=\"%s\" alt=\"%s\" />"
+                "<figcaption>%s</figcaption></figure>\n",
+                src ? src : "", alt, alt);
+
+            cmark_node *block = cmark_node_new_with_mem(CMARK_NODE_HTML_BLOCK, mem);
+            cmark_node_set_literal(block, html);
+            cmark_node_insert_before(parent, block);
+            cmark_node_free(parent);
+            free(html);
+        }
+        free(fig_images);
+    }
+
     /* Promote HTML_INLINE containing block-level content out of paragraphs.
      * When a template/embed resolves to <div>, <nav>, <table>, etc. and is
      * the sole content of a paragraph, replace the paragraph with HTML_BLOCK. */

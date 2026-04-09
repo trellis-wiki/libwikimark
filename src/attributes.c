@@ -321,14 +321,18 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
             memcpy(html + hlen, s, _l); hlen += _l; \
         } while(0)
 
-        /* Check for figure-class images (.thumb or .frame) */
+        /* Standalone images (sole content of paragraph) become <figure>.
+         * This follows Pandoc's convention — no magic class names needed. */
         int is_figure = 0;
         if (is_image) {
-            for (int j = 0; j < attrs.class_count; j++) {
-                if (strcmp(attrs.classes[j], "thumb") == 0 ||
-                    strcmp(attrs.classes[j], "frame") == 0) {
+            cmark_node *parent = cmark_node_parent(elem);
+            if (parent && parent->type == CMARK_NODE_PARAGRAPH) {
+                /* Check if image + text node are the only children */
+                cmark_node *first = cmark_node_first_child(parent);
+                cmark_node *after_elem = cmark_node_next(elem);
+                /* Standalone: image is first child, only followed by the modifier text */
+                if (first == elem && (!after_elem || after_elem == text)) {
                     is_figure = 1;
-                    break;
                 }
             }
         }
