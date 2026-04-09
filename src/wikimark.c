@@ -6,6 +6,13 @@
 #include "wikilink.h"
 #include "node_types.h"
 #include "wm_private.h"
+#include "frontmatter.h"
+#include "variable.h"
+#include "callout.h"
+#include "redirect.h"
+#include "template.h"
+#include "attributes.h"
+#include "annotation.h"
 
 #include <cmark-gfm.h>
 #include <cmark-gfm-extension_api.h>
@@ -57,7 +64,47 @@ wikimark_config wikimark_config_default(void) {
 static char *do_convert(const char *text, size_t len, int options,
                         const wikimark_config *config) {
     wikimark_extensions_ensure_registered();
+    cmark_mem *mem = cmark_get_default_mem_allocator();
 
+    /* === Phase 1: Frontmatter extraction === */
+    size_t body_start = 0;
+    wm_fm_node *frontmatter = wm_frontmatter_parse(text, len, &body_start);
+    const char *body = text + body_start;
+    size_t body_len = len - body_start;
+
+    /* === Pre-process: protect \[\[ from wiki link parsing === */
+    char *preprocessed = NULL;
+    int needs_preprocess = 0;
+    for (size_t i = 0; i + 3 < body_len; i++) {
+        if (body[i] == '\\' && body[i+1] == '[' &&
+            body[i+2] == '\\' && body[i+3] == '[') {
+            needs_preprocess = 1;
+            break;
+        }
+    }
+    if (needs_preprocess) {
+        preprocessed = (char *)malloc(body_len * 2 + 1);
+        size_t j = 0;
+        for (size_t i = 0; i < body_len; i++) {
+            if (i + 3 < body_len &&
+                body[i] == '\\' && body[i+1] == '[' &&
+                body[i+2] == '\\' && body[i+3] == '[') {
+                preprocessed[j++] = (char)0xEE;
+                preprocessed[j++] = (char)0x80;
+                preprocessed[j++] = (char)0x80;
+                preprocessed[j++] = (char)0xEE;
+                preprocessed[j++] = (char)0x80;
+                preprocessed[j++] = (char)0x80;
+                i += 3;
+            } else {
+                preprocessed[j++] = body[i];
+            }
+        }
+        body = preprocessed;
+        body_len = j;
+    }
+
+    /* === Phase 2+3: Parse with cmark-gfm === */
     cmark_parser *parser = cmark_parser_new(options);
 
     /* Attach GFM extensions */
@@ -70,79 +117,66 @@ static char *do_convert(const char *text, size_t len, int options,
             cmark_parser_attach_syntax_extension(parser, ext);
     }
 
-    /* Attach WikiMark extensions */
+    /* Attach WikiMark wikilink extension (handles [[...]] in postprocess) */
     cmark_syntax_extension *wikilink_ext = cmark_find_syntax_extension("wikilink");
     if (wikilink_ext)
         cmark_parser_attach_syntax_extension(parser, wikilink_ext);
 
-    /* Set per-parse config on the wikilink extension */
+    /* Set per-parse state */
     wm_parse_state state;
     state.config = config ? *config : wikimark_config_default();
+    state.frontmatter = frontmatter;
+    state.body = text + body_start; /* original body pointer */
     if (wikilink_ext)
         cmark_syntax_extension_set_private(wikilink_ext, &state, NULL);
 
-    /* Pre-process: protect \[\[ from being parsed as wiki links.
-     *
-     * Problem: cmark converts \[ to literal [ and merges text nodes, so
-     * by postprocess time \[\[foo]] is indistinguishable from [[foo]].
-     *
-     * Solution: replace each \[ with U+E000 (Private Use Area char) before
-     * feeding to cmark. Our postprocessor converts U+E000 back to [ in all
-     * text nodes. Since U+E000 is not [, cmark won't create bracket
-     * structures from it, and our [[ scanner won't match it.
-     *
-     * U+E000 in UTF-8: 0xEE 0x80 0x80 (3 bytes replaces 2 bytes \[ )
-     */
-    char *preprocessed = NULL;
-    int needs_preprocess = 0;
-    for (size_t i = 0; i + 3 < len; i++) {
-        if (text[i] == '\\' && text[i+1] == '[' &&
-            text[i+2] == '\\' && text[i+3] == '[') {
-            needs_preprocess = 1;
-            break;
-        }
-    }
-
-    if (needs_preprocess) {
-        /* Only replace \[\[ (escaped wiki link opener), not bare \[ */
-        preprocessed = (char *)malloc(len * 2 + 1);
-        size_t j = 0;
-        for (size_t i = 0; i < len; i++) {
-            if (i + 3 < len &&
-                text[i] == '\\' && text[i+1] == '[' &&
-                text[i+2] == '\\' && text[i+3] == '[') {
-                /* Replace \[\[ with U+E000 U+E000 */
-                preprocessed[j++] = (char)0xEE;
-                preprocessed[j++] = (char)0x80;
-                preprocessed[j++] = (char)0x80;
-                preprocessed[j++] = (char)0xEE;
-                preprocessed[j++] = (char)0x80;
-                preprocessed[j++] = (char)0x80;
-                i += 3; /* skip \[\[ (4 chars, loop adds 1) */
-            } else {
-                preprocessed[j++] = text[i];
-            }
-        }
-        text = preprocessed;
-        len = j;
-    }
-
-    /* Parse */
-    cmark_parser_feed(parser, text, len);
+    cmark_parser_feed(parser, body, body_len);
     cmark_node *doc = cmark_parser_finish(parser);
 
     if (preprocessed)
         free(preprocessed);
+
+    /* === Phase 4: Post-parse processing ===
+     * The wikilink extension's postprocess_func already handles:
+     *   - [[...]] and ![[...]] detection
+     *   - Wiki-style link rewriting
+     *   - Escaped bracket restoration
+     *
+     * Now run additional post-processing steps:
+     */
+
+    /* Check for redirects — if found, replaces entire document */
+    int is_redirect = wm_handle_redirect(doc, frontmatter,
+                                          text + body_start, mem);
+
+    if (!is_redirect) {
+        /* Expand variables */
+        wm_expand_variables(doc, frontmatter, mem);
+
+        /* Convert callouts */
+        wm_convert_callouts(doc, mem);
+
+        /* Process templates (error indicators for now) */
+        wm_process_templates(doc, mem);
+
+        /* Attach presentation attributes (stub) */
+        wm_attach_attributes(doc, mem);
+
+        /* Attach semantic annotations (stub) */
+        wm_attach_annotations(doc, mem);
+    }
 
     /* Clear per-parse state */
     if (wikilink_ext)
         cmark_syntax_extension_set_private(wikilink_ext, NULL, NULL);
 
     /* Render to HTML */
-    char *html = cmark_render_html(doc, options, cmark_parser_get_syntax_extensions(parser));
+    char *html = cmark_render_html(doc, options,
+                                    cmark_parser_get_syntax_extensions(parser));
 
     cmark_node_free(doc);
     cmark_parser_free(parser);
+    wm_frontmatter_free(frontmatter);
 
     return html;
 }

@@ -7,9 +7,12 @@
 #define WIKIMARK_PRIVATE_H
 
 #include "wikimark.h"
+#include "frontmatter.h"
 
 typedef struct {
     wikimark_config config;
+    wm_fm_node *frontmatter;  /* Parsed YAML frontmatter (owned) */
+    const char *body;         /* Document body after frontmatter (not owned) */
 } wm_parse_state;
 
 #endif

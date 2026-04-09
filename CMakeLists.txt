@@ -14,12 +14,27 @@ set(CMARK_STATIC ON CACHE BOOL "" FORCE)
 set(CMARK_SHARED OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/cmark-gfm)
 
-# --- libwikimark shared library ---
+# --- Build libyaml as a subdirectory ---
+set(INSTALL_CMAKE_DIR OFF CACHE BOOL "" FORCE)
+set(INSTALL_INCLUDE_DIR OFF CACHE BOOL "" FORCE)
+set(INSTALL_LIB_DIR OFF CACHE BOOL "" FORCE)
+set(YAML_STATIC_LIB_NAME yaml_static)
+add_subdirectory(third_party/libyaml)
+
+# --- libwikimark static library ---
 set(WIKIMARK_SOURCES
     src/wikimark.c
     src/wikilink.c
     src/normalize.c
     src/scanner.c
+    src/frontmatter.c
+    src/variable.c
+    src/attributes.c
+    src/annotation.c
+    src/callout.c
+    src/redirect.c
+    src/template.c
+    src/expand.c
 )
 
 add_library(wikimark STATIC ${WIKIMARK_SOURCES})
@@ -30,16 +45,19 @@ target_include_directories(wikimark
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        # cmark-gfm headers (public + internal for parser.h, render.h, etc.)
+        # cmark-gfm headers (public + internal)
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/extensions
         ${CMAKE_BINARY_DIR}/third_party/cmark-gfm/src
+        # libyaml headers
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libyaml/include
 )
 
 target_link_libraries(wikimark
     PUBLIC
         libcmark-gfm-extensions_static
         libcmark-gfm_static
+        yaml
 )
 
 # --- CLI tool ---
