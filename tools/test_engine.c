@@ -253,6 +253,49 @@ static const char *resolve_template(const char *name, const char *args,
     /* Merge caller's arguments into template frontmatter */
     merge_template_args(tmpl_fm, args);
 
+    /* Check for missing required inputs */
+    wm_fm_node *check_inputs = NULL;
+    {
+        wm_fm_node *c = tmpl_fm->children;
+        while (c) {
+            if (c->key && strcmp(c->key, "inputs") == 0) { check_inputs = c; break; }
+            c = c->next;
+        }
+    }
+    if (check_inputs && check_inputs->children) {
+        wm_fm_node *inp = check_inputs->children;
+        while (inp) {
+            if (inp->key) {
+                const char *req = wm_frontmatter_get(inp, "required");
+                if (req && strcmp(req, "true") == 0) {
+                    /* Check if value exists */
+                    int found = 0;
+                    wm_fm_node *c = tmpl_fm->children;
+                    while (c) {
+                        if (c->key && strcmp(c->key, inp->key) == 0 && c != check_inputs) {
+                            found = 1;
+                            break;
+                        }
+                        c = c->next;
+                    }
+                    if (!found) {
+                        /* Return error message */
+                        size_t err_len = strlen(name) + strlen(inp->key) + 100;
+                        char *err = (char *)malloc(err_len);
+                        snprintf(err, err_len,
+                            "<span class=\"wm-error\">{{%s}}: missing required input \"%s\"</span>",
+                            name, inp->key);
+                        wm_frontmatter_free(tmpl_fm);
+                        free(source);
+                        cache_string(e, err);
+                        return err;
+                    }
+                }
+            }
+            inp = inp->next;
+        }
+    }
+
     /* Pre-expand variables in the template body using the merged frontmatter.
      * This is needed because wikimark_render extracts its own frontmatter
      * from the text, but the template body (after frontmatter stripping) has
@@ -300,9 +343,24 @@ static const char *resolve_embed(const char *target, void *user_data) {
     if (!e->pages_dir) return NULL;
     if (e->depth > 40) return NULL;
 
-    size_t path_len = strlen(e->pages_dir) + strlen(target) + 10;
+    /* Split target on # for section embeds: "Main Page#History" → page, section */
+    char *page = strdup(target);
+    char *section = NULL;
+    char *hash = strchr(page, '#');
+    if (hash) {
+        *hash = '\0';
+        section = strdup(hash + 1); /* Copy before freeing page */
+    }
+
+    /* Normalize spaces to underscores for filename */
+    for (char *p = page; *p; p++) {
+        if (*p == ' ') *p = '_';
+    }
+
+    size_t path_len = strlen(e->pages_dir) + strlen(page) + 10;
     char *path = (char *)malloc(path_len);
-    snprintf(path, path_len, "%s/%s.wm", e->pages_dir, target);
+    snprintf(path, path_len, "%s/%s.wm", e->pages_dir, page);
+    free(page);
 
     char *source = read_file(path);
     free(path);
@@ -312,10 +370,48 @@ static const char *resolve_embed(const char *target, void *user_data) {
     wikimark_config config = wikimark_config_default();
     wikimark_context ctx = test_engine_get_context(e);
     char *html = wikimark_render(source, strlen(source), CMARK_OPT_UNSAFE, &config, &ctx);
-    /* Note: single strlen call here — source is only used once */
     e->depth--;
     free(source);
 
+    /* If section targeting is requested, extract just that section */
+    if (html && section) {
+        /* Find <h2>Section Name</h2> and extract until next <h2> or end */
+        char search[256];
+        snprintf(search, sizeof(search), ">%s</h", section);
+        char *found = strstr(html, search);
+        if (found) {
+            /* Find the start of content after the heading's closing tag */
+            char *after_heading = strstr(found, "</h");
+            if (after_heading) {
+                after_heading = strchr(after_heading, '>');
+                if (after_heading) {
+                    after_heading++; /* Past > */
+                    if (*after_heading == '\n') after_heading++;
+                    /* Find next heading of same or higher level, or end */
+                    char *end = strstr(after_heading, "<h");
+                    if (!end) end = html + strlen(html);
+                    /* Trim trailing whitespace */
+                    while (end > after_heading && (end[-1] == '\n' || end[-1] == ' '))
+                        end--;
+                    size_t sec_len = end - after_heading;
+                    /* Strip <p></p> wrapper if present */
+                    if (sec_len > 7 &&
+                        strncmp(after_heading, "<p>", 3) == 0 &&
+                        strncmp(end - 4, "</p>", 4) == 0) {
+                        after_heading += 3;
+                        sec_len -= 7;
+                    }
+                    char *sec_html = (char *)malloc(sec_len + 1);
+                    memcpy(sec_html, after_heading, sec_len);
+                    sec_html[sec_len] = '\0';
+                    free(html);
+                    html = sec_html;
+                }
+            }
+        }
+    }
+
+    free(section);
     if (html) {
         cache_string(e, html);
     }

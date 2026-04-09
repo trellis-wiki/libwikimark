@@ -196,15 +196,70 @@ static char *do_convert(const char *text, size_t len, int options,
     /* Convert callouts */
     wm_convert_callouts(doc, mem);
 
-    /* Process [text]{...} and [text]|...| spans in text nodes */
-    wm_process_spans(doc, mem);
-
     /* Process templates — resolve via engine callback or produce errors */
     wm_process_templates_with_context(doc, mem, context);
+
+    /* Process [text]{...} and [text]|...| spans in text nodes */
+    wm_process_spans(doc, mem);
 
     /* Attach presentation attributes and semantic annotations to links/images */
     wm_attach_attributes(doc, mem);
     wm_attach_annotations(doc, mem);
+
+    /* Promote HTML_INLINE containing block-level content out of paragraphs.
+     * When a template/embed resolves to <div>, <nav>, <table>, etc. and is
+     * the sole content of a paragraph, replace the paragraph with HTML_BLOCK. */
+    {
+        cmark_iter *piter = cmark_iter_new(doc);
+        cmark_event_type pev;
+        cmark_node **to_promote = NULL;
+        int promo_count = 0, promo_cap = 0;
+
+        while ((pev = cmark_iter_next(piter)) != CMARK_EVENT_DONE) {
+            cmark_node *node = cmark_iter_get_node(piter);
+            if (pev == CMARK_EVENT_ENTER && node->type == CMARK_NODE_HTML_INLINE) {
+                const char *lit = cmark_node_get_literal(node);
+                if (lit && (strncmp(lit, "<div class=\"wm-embed\"", 20) == 0 ||
+                            strncmp(lit, "<div class=\"wm-callout\"", 22) == 0 ||
+                            strncmp(lit, "<nav", 4) == 0 ||
+                            strncmp(lit, "<table", 6) == 0)) {
+                    cmark_node *parent = cmark_node_parent(node);
+                    if (parent && parent->type == CMARK_NODE_PARAGRAPH) {
+                        if (promo_count >= promo_cap) {
+                            promo_cap = promo_cap ? promo_cap * 2 : 8;
+                            to_promote = realloc(to_promote, promo_cap * sizeof(cmark_node*));
+                        }
+                        to_promote[promo_count++] = node;
+                    }
+                }
+            }
+        }
+        cmark_iter_free(piter);
+
+        for (int pi = 0; pi < promo_count; pi++) {
+            cmark_node *node = to_promote[pi];
+            cmark_node *parent = cmark_node_parent(node);
+            if (!parent) continue;
+
+            const char *lit = cmark_node_get_literal(node);
+            size_t lit_len = lit ? strlen(lit) : 0;
+
+            /* Build block HTML with newline */
+            char *block_html = (char *)mem->calloc(1, lit_len + 2);
+            memcpy(block_html, lit, lit_len);
+            if (lit_len == 0 || block_html[lit_len-1] != '\n')
+                block_html[lit_len++] = '\n';
+            block_html[lit_len] = '\0';
+
+            cmark_node *block = cmark_node_new_with_mem(CMARK_NODE_HTML_BLOCK, mem);
+            cmark_node_set_literal(block, block_html);
+            mem->free(block_html);
+
+            cmark_node_insert_before(parent, block);
+            cmark_node_free(parent);
+        }
+        free(to_promote);
+    }
 
     /* Clear per-parse state */
     if (wikilink_ext)

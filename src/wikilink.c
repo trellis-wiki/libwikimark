@@ -29,7 +29,8 @@ cmark_node_type CMARK_NODE_WM_WIKILINK;
 
 /* --- Forbidden characters in wiki link targets (spec §13.6) --- */
 
-static int is_forbidden_in_target(unsigned char c) {
+static int is_forbidden_in_target(unsigned char c, int allow_hash) {
+    if (c == '#' && allow_hash) return 0;
     return c == '#' || c == '<' || c == '>' || c == '[' || c == ']' ||
            c == '{' || c == '}' || c == '|' || c == '\n' || c == '\r';
 }
@@ -43,7 +44,8 @@ static int is_forbidden_in_target(unsigned char c) {
  * On success, sets *target_start and *target_len.
  */
 static int try_parse_wikilink(const char *s, int len, int pos,
-                               int *target_start, int *target_len) {
+                               int *target_start, int *target_len,
+                               int allow_hash) {
     /* pos points to the first '[', pos+1 to the second '[' */
     if (pos + 1 >= len || s[pos] != '[' || s[pos + 1] != '[')
         return -1;
@@ -59,7 +61,7 @@ static int try_parse_wikilink(const char *s, int len, int pos,
 
             /* Check for forbidden chars */
             for (int j = start; j < i; j++) {
-                if (is_forbidden_in_target((unsigned char)s[j]))
+                if (is_forbidden_in_target((unsigned char)s[j], allow_hash))
                     return -1;
             }
 
@@ -282,7 +284,8 @@ static void process_text_node(cmark_syntax_extension *ext,
         }
 
         int target_start, target_len;
-        int end = try_parse_wikilink(literal, len, bracket_pos, &target_start, &target_len);
+        int end = try_parse_wikilink(literal, len, bracket_pos, &target_start, &target_len,
+                                      is_embed /* allow # in embed targets */);
         if (end >= 0) {
             /* Adjust start position for ![[  */
             int node_start = is_embed ? pos : bracket_pos;

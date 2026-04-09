@@ -501,10 +501,4 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
     free(pairs);
 }
 
-void wm_attach_annotations(cmark_node *root, cmark_mem *mem) {
-    /* Annotations use the same detection as attributes but with |...|.
-     * For now, delegated to wm_attach_attributes which handles both.
-     */
-    (void)root;
-    (void)mem;
-}
+/* wm_attach_annotations is now in annotation.c */
