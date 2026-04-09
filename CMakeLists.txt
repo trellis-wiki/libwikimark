@@ -60,14 +60,16 @@ target_link_libraries(wikimark
         yaml
 )
 
-# --- CLI tool ---
-add_executable(wikimark-cli tools/wikimark.c)
+# --- CLI tool (with test engine) ---
+add_executable(wikimark-cli tools/wikimark.c tools/test_engine.c)
 set_target_properties(wikimark-cli PROPERTIES OUTPUT_NAME wikimark)
 target_link_libraries(wikimark-cli PRIVATE wikimark)
 target_include_directories(wikimark-cli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/src
     ${CMAKE_BINARY_DIR}/third_party/cmark-gfm/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmark-gfm/extensions
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libyaml/include
 )
 
 # --- Tests ---

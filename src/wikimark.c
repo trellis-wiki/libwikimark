@@ -7,6 +7,7 @@
 #include "node_types.h"
 #include "wm_private.h"
 #include "frontmatter.h"
+#include "normalize.h"
 #include "variable.h"
 #include "callout.h"
 #include "redirect.h"
@@ -23,6 +24,7 @@
 #include <plugin.h>
 
 #include <string.h>
+#include <stdlib.h>
 #include <pthread.h>
 
 /* --- Registration --- */
@@ -35,9 +37,7 @@ static int wikimark_registration(cmark_plugin *plugin) {
 static pthread_once_t once_control = PTHREAD_ONCE_INIT;
 
 static void do_register(void) {
-    /* Register GFM core extensions first (tables, strikethrough, etc.) */
     cmark_gfm_core_extensions_ensure_registered();
-    /* Then register WikiMark extensions */
     cmark_register_plugin(wikimark_registration);
 }
 
@@ -49,20 +49,38 @@ void wikimark_extensions_ensure_registered(void) {
 
 wikimark_config wikimark_config_default(void) {
     wikimark_config config;
+    memset(&config, 0, sizeof(config));
     config.base_url = "";
-    config.template_dir = NULL;
-    config.max_expansion_depth = 40;
-    config.max_expansions = 500;
-    config.max_output_size = 2 * 1024 * 1024;
     config.case_sensitive = 0;
     config.bare_bracket_links = 1;
+    config.interwiki = NULL;
+    config.interwiki_count = 0;
     return config;
 }
 
-/* --- Convenience API --- */
+wikimark_context wikimark_context_default(void) {
+    wikimark_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    return ctx;
+}
+
+/* --- Default variable resolver (frontmatter only) --- */
+
+typedef struct {
+    const wm_fm_node *frontmatter;
+} default_resolver_data;
+
+static const char *default_resolve_variable(const char *path, void *user_data) {
+    default_resolver_data *d = (default_resolver_data *)user_data;
+    if (!d || !d->frontmatter) return NULL;
+    return wm_frontmatter_get(d->frontmatter, path);
+}
+
+/* --- Core render function --- */
 
 static char *do_convert(const char *text, size_t len, int options,
-                        const wikimark_config *config) {
+                        const wikimark_config *config,
+                        const wikimark_context *context) {
     wikimark_extensions_ensure_registered();
     cmark_mem *mem = cmark_get_default_mem_allocator();
 
@@ -71,6 +89,52 @@ static char *do_convert(const char *text, size_t len, int options,
     wm_fm_node *frontmatter = wm_frontmatter_parse(text, len, &body_start);
     const char *body = text + body_start;
     size_t body_len = len - body_start;
+
+    /* Check for redirect (frontmatter-only) — skip rendering if redirect */
+    if (frontmatter) {
+        const char *redirect_target = wm_frontmatter_get(frontmatter, "redirect");
+        if (redirect_target) {
+            char *normalized = wikimark_normalize_title(
+                redirect_target, config ? config->case_sensitive : 0, mem);
+            if (normalized) {
+                size_t html_len = strlen(redirect_target) + strlen(normalized) + 100;
+                char *html = (char *)mem->calloc(1, html_len);
+                snprintf(html, html_len,
+                    "<p>Redirecting to <a href=\"%s\">%s</a>.</p>\n",
+                    normalized, redirect_target);
+                mem->free(normalized);
+                wm_frontmatter_free(frontmatter);
+                return html;
+            }
+        }
+    }
+
+    /* === Determine resolution context === */
+
+    /* If no engine context provided, use a default that resolves ${...}
+     * from the page's own frontmatter. If an engine is provided, it's
+     * responsible for all resolution (including frontmatter variables). */
+    default_resolver_data default_data;
+    wikimark_context default_ctx;
+    const wikimark_context *ctx;
+
+    if (context && context->resolve_variable) {
+        ctx = context;
+    } else {
+        default_data.frontmatter = frontmatter;
+        default_ctx = wikimark_context_default();
+        default_ctx.resolve_variable = default_resolve_variable;
+        default_ctx.user_data = &default_data;
+        ctx = &default_ctx;
+    }
+
+    /* Expand ${...} variables in the body text before parsing.
+     * This is a text-level substitution so the parser sees the resolved values. */
+    char *expanded_body = wm_expand_variables_str(body, body_len, ctx);
+    if (expanded_body) {
+        body = expanded_body;
+        body_len = strlen(expanded_body);
+    }
 
     /* === Pre-process: protect \[\[ from wiki link parsing === */
     char *preprocessed = NULL;
@@ -107,7 +171,6 @@ static char *do_convert(const char *text, size_t len, int options,
     /* === Phase 2+3: Parse with cmark-gfm === */
     cmark_parser *parser = cmark_parser_new(options);
 
-    /* Attach GFM extensions */
     static const char *gfm_exts[] = {
         "table", "strikethrough", "autolink", "tagfilter", "tasklist", NULL
     };
@@ -117,7 +180,6 @@ static char *do_convert(const char *text, size_t len, int options,
             cmark_parser_attach_syntax_extension(parser, ext);
     }
 
-    /* Attach WikiMark wikilink extension (handles [[...]] in postprocess) */
     cmark_syntax_extension *wikilink_ext = cmark_find_syntax_extension("wikilink");
     if (wikilink_ext)
         cmark_parser_attach_syntax_extension(parser, wikilink_ext);
@@ -125,46 +187,29 @@ static char *do_convert(const char *text, size_t len, int options,
     /* Set per-parse state */
     wm_parse_state state;
     state.config = config ? *config : wikimark_config_default();
+    state.context = ctx;
     state.frontmatter = frontmatter;
-    state.body = text + body_start; /* original body pointer */
     if (wikilink_ext)
         cmark_syntax_extension_set_private(wikilink_ext, &state, NULL);
 
     cmark_parser_feed(parser, body, body_len);
     cmark_node *doc = cmark_parser_finish(parser);
 
-    if (preprocessed)
-        free(preprocessed);
+    if (preprocessed) free(preprocessed);
 
-    /* === Phase 4: Post-parse processing ===
-     * The wikilink extension's postprocess_func already handles:
-     *   - [[...]] and ![[...]] detection
-     *   - Wiki-style link rewriting
-     *   - Escaped bracket restoration
-     *
-     * Now run additional post-processing steps:
-     */
+    /* === Phase 4: Post-parse processing === */
+    /* The wikilink postprocess handles [[...]], ![[...]], wiki-style links,
+     * and escaped bracket restoration. */
 
-    /* Check for redirects — if found, replaces entire document */
-    int is_redirect = wm_handle_redirect(doc, frontmatter,
-                                          text + body_start, mem);
+    /* Convert callouts */
+    wm_convert_callouts(doc, mem);
 
-    if (!is_redirect) {
-        /* Expand variables */
-        wm_expand_variables(doc, frontmatter, mem);
+    /* Process templates — resolve via engine callback or produce errors */
+    wm_process_templates_with_context(doc, mem, ctx);
 
-        /* Convert callouts */
-        wm_convert_callouts(doc, mem);
-
-        /* Process templates (error indicators for now) */
-        wm_process_templates(doc, mem);
-
-        /* Attach presentation attributes (stub) */
-        wm_attach_attributes(doc, mem);
-
-        /* Attach semantic annotations (stub) */
-        wm_attach_annotations(doc, mem);
-    }
+    /* Attach presentation attributes and semantic annotations */
+    wm_attach_attributes(doc, mem);
+    wm_attach_annotations(doc, mem);
 
     /* Clear per-parse state */
     if (wikilink_ext)
@@ -177,23 +222,31 @@ static char *do_convert(const char *text, size_t len, int options,
     cmark_node_free(doc);
     cmark_parser_free(parser);
     wm_frontmatter_free(frontmatter);
+    free(expanded_body);
 
     return html;
 }
 
+/* --- Public API --- */
+
 char *wikimark_markdown_to_html(const char *text, size_t len, int options) {
-    return do_convert(text, len, options, NULL);
+    return do_convert(text, len, options, NULL, NULL);
 }
 
 char *wikimark_markdown_to_html_with_config(
     const char *text, size_t len, int options,
     const wikimark_config *config) {
-    return do_convert(text, len, options, config);
+    return do_convert(text, len, options, config, NULL);
+}
+
+char *wikimark_render(const char *text, size_t len, int options,
+                      const wikimark_config *config,
+                      const wikimark_context *context) {
+    return do_convert(text, len, options, config, context);
 }
 
 void wikimark_free(void *ptr) {
-    cmark_mem *mem = cmark_get_default_mem_allocator();
-    mem->free(ptr);
+    cmark_get_default_mem_allocator()->free(ptr);
 }
 
 /* --- Node type accessors --- */

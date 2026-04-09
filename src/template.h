@@ -2,11 +2,13 @@
 #define WIKIMARK_TEMPLATE_H
 
 #include <cmark-gfm.h>
+#include "wikimark.h"
 
 /**
- * Detect {{...}} template transclusions in text nodes and convert them
- * to error indicators (since template resolution requires a page store).
+ * Process {{...}} template transclusions in text nodes.
+ * Uses engine callbacks to resolve templates, or produces error indicators.
  */
-void wm_process_templates(cmark_node *root, cmark_mem *mem);
+void wm_process_templates_with_context(cmark_node *root, cmark_mem *mem,
+                                        const wikimark_context *ctx);
 
 #endif

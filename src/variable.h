@@ -2,13 +2,13 @@
 #define WIKIMARK_VARIABLE_H
 
 #include <cmark-gfm.h>
-#include "frontmatter.h"
+#include "wikimark.h"
 
 /**
- * Expand ${...} variable references in all text nodes of the AST.
- * Resolves against the frontmatter tree.
+ * Expand ${...} variable references in a string using engine callbacks.
+ * Returns a newly allocated string (caller must free), or NULL if no expansions.
  */
-void wm_expand_variables(cmark_node *root, const wm_fm_node *frontmatter,
-                          cmark_mem *mem);
+char *wm_expand_variables_str(const char *s, size_t len,
+                               const wikimark_context *ctx);
 
 #endif

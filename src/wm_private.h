@@ -1,8 +1,3 @@
-/**
- * Internal per-parse state stored on the wikilink extension's private data.
- * Set before parsing, cleared after.
- */
-
 #ifndef WIKIMARK_PRIVATE_H
 #define WIKIMARK_PRIVATE_H
 
@@ -11,8 +6,8 @@
 
 typedef struct {
     wikimark_config config;
-    wm_fm_node *frontmatter;  /* Parsed YAML frontmatter (owned) */
-    const char *body;         /* Document body after frontmatter (not owned) */
+    const wikimark_context *context;  /* Engine callbacks (may be NULL) */
+    wm_fm_node *frontmatter;          /* Parsed YAML frontmatter (owned by do_convert) */
 } wm_parse_state;
 
 #endif
