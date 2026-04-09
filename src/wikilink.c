@@ -220,13 +220,102 @@ static void process_text_node(cmark_syntax_extension *ext,
     }
 }
 
+/**
+ * Check if a URL is a wiki target (no protocol scheme, no special prefix).
+ *
+ * A link target is a wiki link if it does NOT match any of:
+ * - Has an RFC 3986 scheme (letters followed by ":")
+ * - Starts with # (anchor)
+ * - Starts with / (absolute path)
+ * - Starts with ./ or ../ (relative path)
+ */
+static int is_wiki_url(const char *url) {
+    if (!url || !*url)
+        return 0;
+
+    /* Starts with # — anchor link */
+    if (url[0] == '#')
+        return 0;
+
+    /* Starts with / — absolute path */
+    if (url[0] == '/')
+        return 0;
+
+    /* Starts with ./ or ../ — relative path */
+    if (url[0] == '.') {
+        if (url[1] == '/')
+            return 0;
+        if (url[1] == '.' && url[2] == '/')
+            return 0;
+    }
+
+    /* Check for RFC 3986 scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":" */
+    const char *p = url;
+    if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) {
+        p++;
+        while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '+' || *p == '-' || *p == '.') {
+            p++;
+        }
+        if (*p == ':') {
+            /* Has a scheme — not a wiki link */
+            return 0;
+        }
+    }
+
+    /* No scheme, no special prefix — treat as wiki page name */
+    return 1;
+}
+
+/**
+ * Rewrite standard Markdown links that have wiki-style targets.
+ * [text](Page Name) where "Page Name" has no protocol → normalize the URL.
+ */
+static void rewrite_wiki_style_links(cmark_node *root, cmark_mem *mem) {
+    cmark_iter *iter = cmark_iter_new(root);
+    cmark_event_type ev_type;
+
+    /* Collect link nodes to rewrite */
+    cmark_node **links = NULL;
+    int link_count = 0;
+    int link_cap = 0;
+
+    while ((ev_type = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+        cmark_node *node = cmark_iter_get_node(iter);
+        if (ev_type == CMARK_EVENT_ENTER && node->type == CMARK_NODE_LINK) {
+            const char *url = cmark_node_get_url(node);
+            if (is_wiki_url(url)) {
+                if (link_count >= link_cap) {
+                    link_cap = link_cap ? link_cap * 2 : 16;
+                    links = (cmark_node **)realloc(links, link_cap * sizeof(cmark_node *));
+                }
+                links[link_count++] = node;
+            }
+        }
+    }
+    cmark_iter_free(iter);
+
+    /* Normalize URLs for collected wiki-style links */
+    for (int i = 0; i < link_count; i++) {
+        const char *url = cmark_node_get_url(links[i]);
+        char *normalized = wikimark_normalize_title(url, 0, mem);
+        if (normalized) {
+            cmark_node_set_url(links[i], normalized);
+            mem->free(normalized);
+        }
+    }
+
+    free(links);
+}
+
 static cmark_node *postprocess(cmark_syntax_extension *ext,
                                 cmark_parser *parser, cmark_node *root) {
     cmark_iter *iter = cmark_iter_new(root);
     cmark_event_type ev_type;
     cmark_mem *mem = parser->mem;
 
-    /* Collect text nodes to process (can't modify tree during iteration) */
+    /* --- Pass 1: Find [[...]] in text nodes and convert to wiki links --- */
+
     cmark_node **nodes = NULL;
     int node_count = 0;
     int node_cap = 0;
@@ -246,7 +335,6 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
             && !inside_link) {
             const char *lit = cmark_node_get_literal(node);
             if (lit && strstr(lit, "[[")) {
-                /* Add to list */
                 if (node_count >= node_cap) {
                     node_cap = node_cap ? node_cap * 2 : 16;
                     nodes = (cmark_node **)realloc(nodes, node_cap * sizeof(cmark_node *));
@@ -257,12 +345,18 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
     }
     cmark_iter_free(iter);
 
-    /* Process collected text nodes */
     for (int i = 0; i < node_count; i++) {
         process_text_node(ext, nodes[i], mem);
     }
-
     free(nodes);
+
+    /* --- Pass 2: Rewrite wiki-style Markdown links [text](Page) ---
+     * DISABLED: Cannot reliably distinguish wiki targets from standard
+     * relative URLs. All [text](url) links are standard Markdown for now.
+     * Wiki links use [[...]] syntax exclusively.
+     * TODO: Consider a wiki: URI scheme prefix for explicit wiki-style links.
+     */
+
     return root;
 }
 
