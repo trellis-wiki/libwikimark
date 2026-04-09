@@ -38,6 +38,12 @@ void wikimark_extensions_ensure_registered(void);
 
 /* --- Configuration --- */
 
+/** An interwiki prefix mapping. */
+typedef struct wikimark_interwiki {
+    const char *prefix;     /**< e.g., "wikipedia" */
+    const char *url_format; /**< e.g., "https://en.wikipedia.org/wiki/{page}" */
+} wikimark_interwiki;
+
 typedef struct wikimark_config {
     const char *base_url;       /**< Prepended to wiki link hrefs (default: "") */
     const char *template_dir;   /**< Template directory; NULL = disabled (default: NULL) */
@@ -46,6 +52,8 @@ typedef struct wikimark_config {
     size_t max_output_size;     /**< Max expanded output bytes (default: 2MB) */
     int case_sensitive;         /**< 1 = disable first-letter capitalization (default: 0) */
     int bare_bracket_links;     /**< 1 = bare [PageName] becomes wiki link (default: 1) */
+    const wikimark_interwiki *interwiki; /**< Array of interwiki mappings (NULL-terminated) */
+    int interwiki_count;        /**< Number of interwiki mappings */
 } wikimark_config;
 
 /** Return a config with all default values. */

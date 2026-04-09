@@ -14,6 +14,7 @@
 #include "wikilink.h"
 #include "node_types.h"
 #include "normalize.h"
+#include "wm_private.h"
 
 #include <cmark-gfm.h>
 #include <cmark-gfm-extension_api.h>
@@ -108,28 +109,116 @@ static char *make_display_text(const char *target, int target_len, cmark_mem *me
 }
 
 /**
+ * Try to resolve an interwiki prefix from the target.
+ * If target is "wikipedia:Markdown" and interwiki has "wikipedia" mapped to
+ * "https://en.wikipedia.org/wiki/{page}", returns the expanded URL.
+ * Returns NULL if no interwiki match.
+ */
+static char *try_interwiki(const char *target, const wikimark_config *config,
+                           cmark_mem *mem) {
+    if (!config || !config->interwiki || config->interwiki_count <= 0)
+        return NULL;
+
+    /* Find the colon separator */
+    const char *colon = strchr(target, ':');
+    if (!colon || colon == target)
+        return NULL;
+
+    int prefix_len = (int)(colon - target);
+    const char *page = colon + 1;
+
+    for (int i = 0; i < config->interwiki_count; i++) {
+        const char *iw_prefix = config->interwiki[i].prefix;
+        if (!iw_prefix)
+            continue;
+        /* Case-insensitive prefix match */
+        if ((int)strlen(iw_prefix) == prefix_len) {
+            int match = 1;
+            for (int j = 0; j < prefix_len; j++) {
+                char a = target[j];
+                char b = iw_prefix[j];
+                if (a >= 'A' && a <= 'Z') a += 32;
+                if (b >= 'A' && b <= 'Z') b += 32;
+                if (a != b) { match = 0; break; }
+            }
+            if (match) {
+                /* Expand the URL template */
+                const char *fmt = config->interwiki[i].url_format;
+                if (!fmt) return NULL;
+                const char *placeholder = strstr(fmt, "{page}");
+                if (!placeholder) {
+                    /* No {page} placeholder — just append */
+                    size_t flen = strlen(fmt);
+                    size_t plen = strlen(page);
+                    char *url = (char *)mem->calloc(1, flen + plen + 1);
+                    memcpy(url, fmt, flen);
+                    memcpy(url + flen, page, plen);
+                    url[flen + plen] = '\0';
+                    return url;
+                }
+                /* Replace {page} with the page name */
+                size_t before_len = placeholder - fmt;
+                size_t after_len = strlen(placeholder + 6); /* 6 = strlen("{page}") */
+                size_t plen = strlen(page);
+                char *url = (char *)mem->calloc(1, before_len + plen + after_len + 1);
+                memcpy(url, fmt, before_len);
+                memcpy(url + before_len, page, plen);
+                memcpy(url + before_len + plen, placeholder + 6, after_len);
+                url[before_len + plen + after_len] = '\0';
+                return url;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+/**
  * Create a wiki link as a standard CMARK_NODE_LINK.
  *
  * We use the standard link node type so it's accepted everywhere links are
  * (including inside table cells, which have a hardcoded child type allowlist).
- * The URL is set to the normalized wiki target.
+ * The URL is set to the normalized wiki target (or interwiki-expanded URL).
  */
 static cmark_node *make_wikilink_node(cmark_syntax_extension *ext,
                                        cmark_mem *mem,
-                                       const char *target, int target_len) {
+                                       const char *target, int target_len,
+                                       const wikimark_config *config) {
     /* Copy target to null-terminated buffer */
     char *target_buf = (char *)mem->calloc(1, target_len + 1);
     memcpy(target_buf, target, target_len);
     target_buf[target_len] = '\0';
 
-    char *normalized = wikimark_normalize_title(target_buf, 0, mem);
-    if (!normalized) {
+    /* Try interwiki resolution first */
+    int is_interwiki = 0;
+    char *url = try_interwiki(target_buf, config, mem);
+    if (url) {
+        is_interwiki = 1;
+    } else {
+        /* Standard wiki link — normalize the title */
+        int case_sensitive = config ? config->case_sensitive : 0;
+        url = wikimark_normalize_title(target_buf, case_sensitive, mem);
+    }
+
+    if (!url) {
         mem->free(target_buf);
         return NULL;
     }
 
+    /* Prepend base_url for non-interwiki links */
+    if (!is_interwiki && config && config->base_url && config->base_url[0]) {
+        size_t base_len = strlen(config->base_url);
+        size_t url_len = strlen(url);
+        char *full = (char *)mem->calloc(1, base_len + url_len + 1);
+        memcpy(full, config->base_url, base_len);
+        memcpy(full + base_len, url, url_len);
+        full[base_len + url_len] = '\0';
+        mem->free(url);
+        url = full;
+    }
+
     cmark_node *link = cmark_node_new_with_mem(CMARK_NODE_LINK, mem);
-    cmark_node_set_url(link, normalized);
+    cmark_node_set_url(link, url);
 
     /* Create display text child */
     char *display = make_display_text(target, target_len, mem);
@@ -138,17 +227,31 @@ static cmark_node *make_wikilink_node(cmark_syntax_extension *ext,
     cmark_node_append_child(link, text);
 
     mem->free(target_buf);
-    mem->free(normalized);
+    mem->free(url);
     mem->free(display);
     return link;
 }
 
 /**
- * Process a single text node: split it on [[...]] patterns, inserting
- * wiki link nodes as siblings.
+ * Create an error indicator span.
+ */
+static cmark_node *make_error_node(cmark_mem *mem, const char *text) {
+    cmark_node *html = cmark_node_new_with_mem(CMARK_NODE_HTML_INLINE, mem);
+    size_t len = strlen(text);
+    char *buf = (char *)mem->calloc(1, len + 60);
+    snprintf(buf, len + 60, "<span class=\"wm-error\">%s</span>", text);
+    cmark_node_set_literal(html, buf);
+    mem->free(buf);
+    return html;
+}
+
+/**
+ * Process a single text node: split it on [[...]] and ![[...]] patterns,
+ * inserting wiki link / embed nodes as siblings.
  */
 static void process_text_node(cmark_syntax_extension *ext,
-                               cmark_node *text_node, cmark_mem *mem) {
+                               cmark_node *text_node, cmark_mem *mem,
+                               const wikimark_config *config) {
     const char *literal = cmark_node_get_literal(text_node);
     if (!literal)
         return;
@@ -157,9 +260,14 @@ static void process_text_node(cmark_syntax_extension *ext,
     int pos = 0;
     int found = 0;
 
-    /* First pass: check if there are any [[ at all */
+    /* First pass: check if there are any [[ or ![[ at all */
     for (int i = 0; i < len - 1; i++) {
         if (literal[i] == '[' && literal[i + 1] == '[') {
+            found = 1;
+            break;
+        }
+        if (literal[i] == '!' && i + 2 < len &&
+            literal[i + 1] == '[' && literal[i + 2] == '[') {
             found = 1;
             break;
         }
@@ -173,32 +281,60 @@ static void process_text_node(cmark_syntax_extension *ext,
 
     pos = 0;
     while (pos < len - 1) {
-        if (literal[pos] == '[' && literal[pos + 1] == '[') {
-            int target_start, target_len;
-            int end = try_parse_wikilink(literal, len, pos, &target_start, &target_len);
-            if (end >= 0) {
-                /* Text before the wiki link */
-                if (pos > last_end) {
-                    cmark_node *before = cmark_node_new_with_mem(CMARK_NODE_TEXT, mem);
-                    char *before_text = (char *)mem->calloc(1, pos - last_end + 1);
-                    memcpy(before_text, literal + last_end, pos - last_end);
-                    before_text[pos - last_end] = '\0';
-                    cmark_node_set_literal(before, before_text);
-                    mem->free(before_text);
-                    cmark_node_insert_after(insert_after, before);
-                    insert_after = before;
-                }
+        /* Detect ![[...]] (embed) or [[...]] (wiki link) */
+        int is_embed = 0;
+        int bracket_pos = pos;
 
-                /* The wiki link node */
+        if (literal[pos] == '!' && pos + 2 < len &&
+            literal[pos + 1] == '[' && literal[pos + 2] == '[') {
+            is_embed = 1;
+            bracket_pos = pos + 1;
+        } else if (literal[pos] == '[' && literal[pos + 1] == '[') {
+            bracket_pos = pos;
+        } else {
+            pos++;
+            continue;
+        }
+
+        int target_start, target_len;
+        int end = try_parse_wikilink(literal, len, bracket_pos, &target_start, &target_len);
+        if (end >= 0) {
+            /* Adjust start position for ![[  */
+            int node_start = is_embed ? pos : bracket_pos;
+
+            /* Text before the construct */
+            if (node_start > last_end) {
+                cmark_node *before = cmark_node_new_with_mem(CMARK_NODE_TEXT, mem);
+                char *before_text = (char *)mem->calloc(1, node_start - last_end + 1);
+                memcpy(before_text, literal + last_end, node_start - last_end);
+                before_text[node_start - last_end] = '\0';
+                cmark_node_set_literal(before, before_text);
+                mem->free(before_text);
+                cmark_node_insert_after(insert_after, before);
+                insert_after = before;
+            }
+
+            if (is_embed) {
+                /* Page embed: ![[target]] — render as error for now
+                 * (actual transclusion requires page resolution) */
+                char *err_text = (char *)mem->calloc(1, target_len + 10);
+                snprintf(err_text, target_len + 10, "![[%.*s]]", target_len,
+                         literal + target_start);
+                cmark_node *err = make_error_node(mem, err_text);
+                mem->free(err_text);
+                cmark_node_insert_after(insert_after, err);
+                insert_after = err;
+            } else {
+                /* Wiki link */
                 cmark_node *wl = make_wikilink_node(ext, mem,
-                    literal + target_start, target_len);
+                    literal + target_start, target_len, config);
                 cmark_node_insert_after(insert_after, wl);
                 insert_after = wl;
-
-                last_end = end;
-                pos = end;
-                continue;
             }
+
+            last_end = end;
+            pos = end;
+            continue;
         }
         pos++;
     }
@@ -314,7 +450,11 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
     cmark_event_type ev_type;
     cmark_mem *mem = parser->mem;
 
-    /* --- Pass 1: Find [[...]] in text nodes and convert to wiki links --- */
+    /* Get per-parse config */
+    wm_parse_state *state = (wm_parse_state *)cmark_syntax_extension_get_private(ext);
+    const wikimark_config *config = state ? &state->config : NULL;
+
+    /* --- Pass 1: Find [[...]] and ![[...]] in text nodes --- */
 
     cmark_node **nodes = NULL;
     int node_count = 0;
@@ -346,7 +486,7 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
     cmark_iter_free(iter);
 
     for (int i = 0; i < node_count; i++) {
-        process_text_node(ext, nodes[i], mem);
+        process_text_node(ext, nodes[i], mem, config);
     }
     free(nodes);
 

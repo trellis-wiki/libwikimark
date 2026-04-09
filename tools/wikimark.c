@@ -68,7 +68,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char *html = wikimark_markdown_to_html(text, len, CMARK_OPT_DEFAULT | CMARK_OPT_UNSAFE);
+    /* Configure with default interwiki prefixes for testing */
+    wikimark_interwiki interwiki[] = {
+        { "wikipedia", "https://en.wikipedia.org/wiki/{page}" },
+    };
+    wikimark_config config = wikimark_config_default();
+    config.interwiki = interwiki;
+    config.interwiki_count = 1;
+
+    char *html = wikimark_markdown_to_html_with_config(
+        text, len, CMARK_OPT_DEFAULT | CMARK_OPT_UNSAFE, &config);
     free(text);
 
     if (!html) {

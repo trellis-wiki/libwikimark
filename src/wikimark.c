@@ -5,6 +5,7 @@
 #include "wikimark.h"
 #include "wikilink.h"
 #include "node_types.h"
+#include "wm_private.h"
 
 #include <cmark-gfm.h>
 #include <cmark-gfm-extension_api.h>
@@ -74,9 +75,24 @@ static char *do_convert(const char *text, size_t len, int options,
     if (wikilink_ext)
         cmark_parser_attach_syntax_extension(parser, wikilink_ext);
 
+    /* Set per-parse config on the wikilink extension */
+    wm_parse_state state;
+    state.config = config ? *config : wikimark_config_default();
+    if (wikilink_ext)
+        cmark_syntax_extension_set_private(wikilink_ext, &state, NULL);
+
     /* Parse */
     cmark_parser_feed(parser, text, len);
     cmark_node *doc = cmark_parser_finish(parser);
+
+    /* NOTE: \[\[ backslash escaping doesn't work because cmark merges
+     * escaped brackets into literal text before our postprocessor runs.
+     * Use code spans (`[[not a link]]`) to prevent wiki link parsing.
+     * This is a known limitation of the postprocess-based approach. */
+
+    /* Clear per-parse state */
+    if (wikilink_ext)
+        cmark_syntax_extension_set_private(wikilink_ext, NULL, NULL);
 
     /* Render to HTML */
     char *html = cmark_render_html(doc, options, cmark_parser_get_syntax_extensions(parser));
