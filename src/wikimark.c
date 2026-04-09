@@ -14,6 +14,7 @@
 #include "template.h"
 #include "attributes.h"
 #include "annotation.h"
+#include "spans.h"
 
 #include <cmark-gfm.h>
 #include <cmark-gfm-extension_api.h>
@@ -109,28 +110,19 @@ static char *do_convert(const char *text, size_t len, int options,
         }
     }
 
-    /* === Determine resolution context === */
-
-    /* If no engine context provided, use a default that resolves ${...}
-     * from the page's own frontmatter. If an engine is provided, it's
-     * responsible for all resolution (including frontmatter variables). */
-    default_resolver_data default_data;
-    wikimark_context default_ctx;
-    const wikimark_context *ctx;
-
-    if (context && context->resolve_variable) {
-        ctx = context;
-    } else {
-        default_data.frontmatter = frontmatter;
-        default_ctx = wikimark_context_default();
-        default_ctx.resolve_variable = default_resolve_variable;
-        default_ctx.user_data = &default_data;
-        ctx = &default_ctx;
-    }
+    /* === Variable expansion (pre-parse, from page frontmatter) === */
+    /* Variables always resolve from the page's own frontmatter.
+     * This is a text substitution before cmark sees the document. */
+    default_resolver_data var_data;
+    var_data.frontmatter = frontmatter;
+    wikimark_context var_ctx = wikimark_context_default();
+    var_ctx.resolve_variable = default_resolve_variable;
+    var_ctx.user_data = &var_data;
 
     /* Expand ${...} variables in the body text before parsing.
-     * This is a text-level substitution so the parser sees the resolved values. */
-    char *expanded_body = wm_expand_variables_str(body, body_len, ctx);
+     * This is a text-level substitution so the parser sees the resolved values.
+     * Always uses the page's own frontmatter, not the engine context. */
+    char *expanded_body = wm_expand_variables_str(body, body_len, &var_ctx);
     if (expanded_body) {
         body = expanded_body;
         body_len = strlen(expanded_body);
@@ -187,7 +179,7 @@ static char *do_convert(const char *text, size_t len, int options,
     /* Set per-parse state */
     wm_parse_state state;
     state.config = config ? *config : wikimark_config_default();
-    state.context = ctx;
+    state.context = context; /* Engine context for interwiki etc. */
     state.frontmatter = frontmatter;
     if (wikilink_ext)
         cmark_syntax_extension_set_private(wikilink_ext, &state, NULL);
@@ -204,10 +196,13 @@ static char *do_convert(const char *text, size_t len, int options,
     /* Convert callouts */
     wm_convert_callouts(doc, mem);
 
-    /* Process templates — resolve via engine callback or produce errors */
-    wm_process_templates_with_context(doc, mem, ctx);
+    /* Process [text]{...} and [text]|...| spans in text nodes */
+    wm_process_spans(doc, mem);
 
-    /* Attach presentation attributes and semantic annotations */
+    /* Process templates — resolve via engine callback or produce errors */
+    wm_process_templates_with_context(doc, mem, context);
+
+    /* Attach presentation attributes and semantic annotations to links/images */
     wm_attach_attributes(doc, mem);
     wm_attach_annotations(doc, mem);
 

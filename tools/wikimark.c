@@ -93,16 +93,11 @@ int main(int argc, char **argv) {
     config.interwiki = interwiki;
     config.interwiki_count = 1;
 
-    /* Set up test engine only if templates/pages are configured */
-    test_engine *engine = NULL;
-    wikimark_context ctx;
-    wikimark_context *ctx_ptr = NULL;
-
-    if (template_dir || pages_dir) {
-        engine = test_engine_new(template_dir, pages_dir);
-        ctx = test_engine_get_context(engine);
-        ctx_ptr = &ctx;
-    }
+    /* Set up test engine — always active for variable resolution,
+     * template resolution only when template_dir is set */
+    test_engine *engine = test_engine_new(template_dir, pages_dir);
+    wikimark_context ctx = test_engine_get_context(engine);
+    wikimark_context *ctx_ptr = &ctx;
 
     /* Render — if no engine, built-in frontmatter resolver handles ${...} */
     char *html = wikimark_render(text, len,

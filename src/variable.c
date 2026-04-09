@@ -22,7 +22,42 @@ char *wm_expand_variables_str(const char *s, size_t len,
     char *result = (char *)malloc(cap);
     size_t j = 0;
 
+    int in_code = 0; /* Track backtick code spans */
+
     for (size_t i = 0; i < len; ) {
+        /* Track code spans — don't expand variables inside backticks */
+        if (s[i] == '`') {
+            if (j + 1 >= cap) { cap *= 2; result = realloc(result, cap); }
+            result[j++] = s[i++];
+            /* Count backticks for fenced code */
+            int ticks = 1;
+            while (i < len && s[i] == '`') {
+                if (j + 1 >= cap) { cap *= 2; result = realloc(result, cap); }
+                result[j++] = s[i++];
+                ticks++;
+            }
+            /* Copy until matching backtick sequence */
+            while (i < len) {
+                int match = 1;
+                if (s[i] == '`') {
+                    int count = 0;
+                    size_t check = i;
+                    while (check < len && s[check] == '`') { count++; check++; }
+                    if (count == ticks) {
+                        /* Closing backticks — copy and break */
+                        for (int t = 0; t < ticks; t++) {
+                            if (j + 1 >= cap) { cap *= 2; result = realloc(result, cap); }
+                            result[j++] = s[i++];
+                        }
+                        break;
+                    }
+                }
+                if (j + 1 >= cap) { cap *= 2; result = realloc(result, cap); }
+                result[j++] = s[i++];
+            }
+            continue;
+        }
+
         /* Escaped \${ → literal ${ */
         if (i + 2 < len && s[i] == '\\' && s[i+1] == '$' && s[i+2] == '{') {
             if (j + 2 >= cap) { cap *= 2; result = realloc(result, cap); }

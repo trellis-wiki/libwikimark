@@ -35,6 +35,7 @@ set(WIKIMARK_SOURCES
     src/redirect.c
     src/template.c
     src/expand.c
+    src/spans.c
 )
 
 add_library(wikimark STATIC ${WIKIMARK_SOURCES})

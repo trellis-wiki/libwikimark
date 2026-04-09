@@ -321,52 +321,123 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
             memcpy(html + hlen, s, _l); hlen += _l; \
         } while(0)
 
-        if (is_link) {
-            APPEND("<a href=\"");
-            if (url) APPEND(url);
-            APPEND("\"");
-        } else if (is_image) {
-            APPEND("<img src=\"");
-            if (url) APPEND(url);
-            APPEND("\"");
-            /* Alt text */
-            const char *alt = "";
+        /* Check for figure-class images (.thumb or .frame) */
+        int is_figure = 0;
+        if (is_image) {
+            for (int j = 0; j < attrs.class_count; j++) {
+                if (strcmp(attrs.classes[j], "thumb") == 0 ||
+                    strcmp(attrs.classes[j], "frame") == 0) {
+                    is_figure = 1;
+                    break;
+                }
+            }
+        }
+
+        const char *alt = "";
+        if (is_image) {
             cmark_node *alt_node = cmark_node_first_child(elem);
             if (alt_node) alt = cmark_node_get_literal(alt_node);
             if (!alt) alt = "";
-            APPEND(" alt=\""); APPEND(alt); APPEND("\"");
         }
 
-        /* Add classes */
-        if (attrs.class_count > 0) {
-            APPEND(" class=\"");
-            for (int j = 0; j < attrs.class_count; j++) {
-                if (j > 0) APPEND(" ");
-                APPEND(attrs.classes[j]);
+        /* Determine caption for figures */
+        const char *caption = NULL;
+        if (is_figure) {
+            /* Check for explicit caption= attribute */
+            for (int j = 0; j < attrs.kv_count; j++) {
+                if (strcmp(attrs.keys[j], "caption") == 0) {
+                    caption = attrs.values[j];
+                    break;
+                }
             }
-            APPEND("\"");
-        }
-        /* Add ID */
-        if (attrs.id) {
-            APPEND(" id=\""); APPEND(attrs.id); APPEND("\"");
-        }
-        /* Add key=value attrs */
-        for (int j = 0; j < attrs.kv_count; j++) {
-            APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
-            APPEND(attrs.values[j]); APPEND("\"");
-        }
-        /* Add semantic annotations as data-wm-* */
-        if (annot.property) {
-            APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
-        }
-        for (int j = 0; j < annot.kv_count; j++) {
-            APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
-            APPEND(annot.values[j]); APPEND("\"");
+            if (!caption) caption = alt; /* Fall back to alt text */
         }
 
-        if (is_image) {
+        if (is_figure) {
+            /* <figure class="thumb ..."><img ... /><figcaption>...</figcaption></figure> */
+            APPEND("<figure");
+            /* Classes on the figure */
+            if (attrs.class_count > 0) {
+                APPEND(" class=\"");
+                for (int j = 0; j < attrs.class_count; j++) {
+                    if (j > 0) APPEND(" ");
+                    APPEND(attrs.classes[j]);
+                }
+                APPEND("\"");
+            }
+            /* Semantic annotations on figure */
+            if (annot.property) {
+                APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
+            }
+            for (int j = 0; j < annot.kv_count; j++) {
+                APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
+                APPEND(annot.values[j]); APPEND("\"");
+            }
+            APPEND(">");
+            /* <img> inside figure */
+            APPEND("<img src=\"");
+            if (url) APPEND(url);
+            APPEND("\" alt=\""); APPEND(alt); APPEND("\"");
+            /* Non-class, non-caption attributes on img */
+            if (attrs.id) { APPEND(" id=\""); APPEND(attrs.id); APPEND("\""); }
+            for (int j = 0; j < attrs.kv_count; j++) {
+                if (strcmp(attrs.keys[j], "caption") == 0) continue;
+                APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
+                APPEND(attrs.values[j]); APPEND("\"");
+            }
             APPEND(" />");
-        } else {
+            APPEND("<figcaption>");
+            if (caption) APPEND(caption);
+            APPEND("</figcaption></figure>");
+        } else if (is_image) {
+            APPEND("<img src=\"");
+            if (url) APPEND(url);
+            APPEND("\" alt=\""); APPEND(alt); APPEND("\"");
+            if (attrs.class_count > 0) {
+                APPEND(" class=\"");
+                for (int j = 0; j < attrs.class_count; j++) {
+                    if (j > 0) APPEND(" ");
+                    APPEND(attrs.classes[j]);
+                }
+                APPEND("\"");
+            }
+            if (attrs.id) { APPEND(" id=\""); APPEND(attrs.id); APPEND("\""); }
+            for (int j = 0; j < attrs.kv_count; j++) {
+                APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
+                APPEND(attrs.values[j]); APPEND("\"");
+            }
+            if (annot.property) {
+                APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
+            }
+            for (int j = 0; j < annot.kv_count; j++) {
+                APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
+                APPEND(annot.values[j]); APPEND("\"");
+            }
+            APPEND(" />");
+        } else if (is_link) {
+            APPEND("<a href=\"");
+            if (url) APPEND(url);
+            APPEND("\"");
+            if (attrs.class_count > 0) {
+                APPEND(" class=\"");
+                for (int j = 0; j < attrs.class_count; j++) {
+                    if (j > 0) APPEND(" ");
+                    APPEND(attrs.classes[j]);
+                }
+                APPEND("\"");
+            }
+            if (attrs.id) { APPEND(" id=\""); APPEND(attrs.id); APPEND("\""); }
+            for (int j = 0; j < attrs.kv_count; j++) {
+                APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
+                APPEND(attrs.values[j]); APPEND("\"");
+            }
+            if (annot.property) {
+                APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
+            }
+            for (int j = 0; j < annot.kv_count; j++) {
+                APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
+                APPEND(annot.values[j]); APPEND("\"");
+            }
             APPEND(">");
             if (link_text) APPEND(link_text);
             APPEND("</a>");
@@ -376,7 +447,37 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
 
         #undef APPEND
 
-        /* Replace the element and consumed text with HTML_INLINE */
+        /* Replace the element with the rendered HTML.
+         * For figures: if the image is the only content in a paragraph,
+         * replace the paragraph with HTML_BLOCK to avoid <p><figure>...</p>. */
+        if (is_figure) {
+            cmark_node *parent = cmark_node_parent(elem);
+            /* Check if elem + text node are the only children */
+            cmark_node *first = cmark_node_first_child(parent);
+            cmark_node *second = first ? cmark_node_next(first) : NULL;
+            cmark_node *third = second ? cmark_node_next(second) : NULL;
+            int only_child = (parent && parent->type == CMARK_NODE_PARAGRAPH &&
+                              first == elem && (!third || (second == text && !cmark_node_next(third ? third : second))));
+
+            if (only_child) {
+                /* Append newline for block-level output */
+                if (hlen + 2 >= html_cap) { html_cap *= 2; html = realloc(html, html_cap); }
+                html[hlen++] = '\n';
+                html[hlen] = '\0';
+
+                cmark_node *block = cmark_node_new_with_mem(CMARK_NODE_HTML_BLOCK, mem);
+                cmark_node_set_literal(block, html);
+                cmark_node_insert_before(parent, block);
+                cmark_node_free(parent); /* Frees paragraph + all children */
+                /* Skip text node cleanup since parent was freed */
+                free(html);
+                free(link_text);
+                free_attrs(&attrs);
+                free_annotation(&annot);
+                continue;
+            }
+        }
+
         cmark_node *html_node = cmark_node_new_with_mem(CMARK_NODE_HTML_INLINE, mem);
         cmark_node_set_literal(html_node, html);
         cmark_node_insert_before(elem, html_node);

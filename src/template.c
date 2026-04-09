@@ -95,11 +95,27 @@ void wm_process_templates_with_context(cmark_node *root, cmark_mem *mem,
                     }
 
                     if (resolved) {
-                        /* Insert resolved HTML */
-                        cmark_node *html = cmark_node_new_with_mem(CMARK_NODE_HTML_INLINE, mem);
-                        cmark_node_set_literal(html, resolved);
-                        cmark_node_insert_after(insert_after, html);
-                        insert_after = html;
+                        /* Insert resolved HTML, stripping outer <p>...</p> for inline use */
+                        const char *inner = resolved;
+                        size_t inner_len = strlen(resolved);
+                        if (inner_len > 7 &&
+                            strncmp(inner, "<p>", 3) == 0 &&
+                            strncmp(inner + inner_len - 4, "</p>", 4) == 0) {
+                            /* Strip <p> and </p> */
+                            char *stripped = (char *)mem->calloc(1, inner_len - 6);
+                            memcpy(stripped, inner + 3, inner_len - 7);
+                            stripped[inner_len - 7] = '\0';
+                            cmark_node *html = cmark_node_new_with_mem(CMARK_NODE_HTML_INLINE, mem);
+                            cmark_node_set_literal(html, stripped);
+                            mem->free(stripped);
+                            cmark_node_insert_after(insert_after, html);
+                            insert_after = html;
+                        } else {
+                            cmark_node *html = cmark_node_new_with_mem(CMARK_NODE_HTML_INLINE, mem);
+                            cmark_node_set_literal(html, resolved);
+                            cmark_node_insert_after(insert_after, html);
+                            insert_after = html;
+                        }
                     } else {
                         /* Error indicator */
                         size_t full_len = close + 2 - pos;
