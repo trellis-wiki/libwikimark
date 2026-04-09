@@ -251,7 +251,8 @@ static cmark_node *make_error_node(cmark_mem *mem, const char *text) {
  */
 static void process_text_node(cmark_syntax_extension *ext,
                                cmark_node *text_node, cmark_mem *mem,
-                               const wikimark_config *config) {
+                               const wikimark_config *config,
+                               const wm_parse_state *state) {
     const char *literal = cmark_node_get_literal(text_node);
     if (!literal)
         return;
@@ -299,15 +300,47 @@ static void process_text_node(cmark_syntax_extension *ext,
             }
 
             if (is_embed) {
-                /* Page embed: ![[target]] — render as error for now
-                 * (actual transclusion requires page resolution) */
-                char *err_text = (char *)mem->calloc(1, target_len + 10);
-                snprintf(err_text, target_len + 10, "![[%.*s]]", target_len,
-                         literal + target_start);
-                cmark_node *err = make_error_node(mem, err_text);
-                mem->free(err_text);
-                cmark_node_insert_after(insert_after, err);
-                insert_after = err;
+                /* Page embed: ![[target]] — try engine callback, fall back to error */
+                char *target_buf = (char *)mem->calloc(1, target_len + 1);
+                memcpy(target_buf, literal + target_start, target_len);
+                target_buf[target_len] = '\0';
+
+                const char *resolved = NULL;
+                if (config && state && state->context && state->context->resolve_embed) {
+                    resolved = state->context->resolve_embed(target_buf, state->context->user_data);
+                }
+
+                if (resolved) {
+                    /* Wrap in <div class="wm-embed"> — strip <p></p> and whitespace */
+                    const char *inner = resolved;
+                    size_t inner_len = strlen(resolved);
+                    /* Trim trailing whitespace */
+                    while (inner_len > 0 && (inner[inner_len-1] == '\n' ||
+                           inner[inner_len-1] == '\r' || inner[inner_len-1] == ' '))
+                        inner_len--;
+                    if (inner_len > 7 &&
+                        strncmp(inner, "<p>", 3) == 0 &&
+                        strncmp(inner + inner_len - 4, "</p>", 4) == 0) {
+                        inner += 3; inner_len -= 7;
+                    }
+                    size_t div_len = inner_len + 40;
+                    char *div = (char *)mem->calloc(1, div_len + 1);
+                    snprintf(div, div_len + 1, "<div class=\"wm-embed\">%.*s</div>",
+                             (int)inner_len, inner);
+                    cmark_node *html = cmark_node_new_with_mem(CMARK_NODE_HTML_INLINE, mem);
+                    cmark_node_set_literal(html, div);
+                    mem->free(div);
+                    cmark_node_insert_after(insert_after, html);
+                    insert_after = html;
+                } else {
+                    char *err_text = (char *)mem->calloc(1, target_len + 10);
+                    snprintf(err_text, target_len + 10, "![[%s]]", target_buf);
+                    cmark_node *err = make_error_node(mem, err_text);
+                    mem->free(err_text);
+                    cmark_node_insert_after(insert_after, err);
+                    insert_after = err;
+                }
+                mem->free(target_buf);
             } else {
                 /* Wiki link */
                 cmark_node *wl = make_wikilink_node(ext, mem,
@@ -530,7 +563,7 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
     cmark_iter_free(iter);
 
     for (int i = 0; i < node_count; i++) {
-        process_text_node(ext, nodes[i], mem, config);
+        process_text_node(ext, nodes[i], mem, config, state);
     }
     free(nodes);
 

@@ -7,8 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Internal headers for frontmatter parsing */
+/* Internal headers */
 #include "frontmatter.h"
+#include "variable.h"
 
 struct test_engine {
     char *template_dir;
@@ -252,19 +253,35 @@ static const char *resolve_template(const char *name, const char *args,
     /* Merge caller's arguments into template frontmatter */
     merge_template_args(tmpl_fm, args);
 
-    /* Render the template body */
-    e->depth++;
-    wikimark_config config = wikimark_config_default();
-    wikimark_context ctx = test_engine_get_context(e);
+    /* Pre-expand variables in the template body using the merged frontmatter.
+     * This is needed because wikimark_render extracts its own frontmatter
+     * from the text, but the template body (after frontmatter stripping) has
+     * no frontmatter — the args/defaults are in tmpl_fm. */
+    const char *body = source + body_start;
+    size_t body_len = source_len - body_start;
+
+    /* Build a variable resolver from the merged template frontmatter */
+    wikimark_context var_ctx = wikimark_context_default();
+    var_ctx.resolve_variable = resolve_variable;
 
     wm_fm_node *saved_fm = e->frontmatter;
     e->frontmatter = tmpl_fm;
+    var_ctx.user_data = e;
 
-    char *html = wikimark_render(source + body_start,
-        source_len - body_start, 0, &config, &ctx);
+    char *expanded = wm_expand_variables_str(body, body_len, &var_ctx);
+    const char *render_body = expanded ? expanded : body;
+    size_t render_len = expanded ? strlen(expanded) : body_len;
+
+    /* Render the expanded template body */
+    e->depth++;
+    wikimark_config config = wikimark_config_default();
+    wikimark_context render_ctx = test_engine_get_context(e);
+
+    char *html = wikimark_render(render_body, render_len, CMARK_OPT_UNSAFE, &config, &render_ctx);
     e->depth--;
 
     e->frontmatter = saved_fm;
+    free(expanded);
     wm_frontmatter_free(tmpl_fm);
     free(source);
 
@@ -294,7 +311,7 @@ static const char *resolve_embed(const char *target, void *user_data) {
     e->depth++;
     wikimark_config config = wikimark_config_default();
     wikimark_context ctx = test_engine_get_context(e);
-    char *html = wikimark_render(source, strlen(source), 0, &config, &ctx);
+    char *html = wikimark_render(source, strlen(source), CMARK_OPT_UNSAFE, &config, &ctx);
     /* Note: single strlen call here — source is only used once */
     e->depth--;
     free(source);
