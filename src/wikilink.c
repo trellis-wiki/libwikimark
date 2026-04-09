@@ -258,24 +258,8 @@ static void process_text_node(cmark_syntax_extension *ext,
 
     int len = (int)strlen(literal);
     int pos = 0;
-    int found = 0;
 
-    /* First pass: check if there are any [[ or ![[ at all */
-    for (int i = 0; i < len - 1; i++) {
-        if (literal[i] == '[' && literal[i + 1] == '[') {
-            found = 1;
-            break;
-        }
-        if (literal[i] == '!' && i + 2 < len &&
-            literal[i + 1] == '[' && literal[i + 2] == '[') {
-            found = 1;
-            break;
-        }
-    }
-    if (!found)
-        return;
-
-    /* Second pass: split the text node */
+    /* Caller already verified this text contains [[ — go straight to splitting */
     cmark_node *insert_after = text_node;
     int last_end = 0;
 

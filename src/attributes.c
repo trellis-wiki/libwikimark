@@ -312,7 +312,7 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
 
         /* Build the HTML string */
         size_t html_cap = 1024;
-        char *html = (char *)mem->calloc(1, html_cap);
+        char *html = (char *)malloc(html_cap);
         size_t hlen = 0;
 
         #define APPEND(s) do { \

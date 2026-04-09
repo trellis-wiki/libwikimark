@@ -40,10 +40,14 @@ char *wm_expand_variables_str(const char *s, size_t len,
             while (end < len && s[end] != '}' && s[end] != '\n') end++;
 
             if (end < len && s[end] == '}') {
-                /* Extract path */
-                char *path = (char *)malloc(end - start + 1);
-                memcpy(path, s + start, end - start);
-                path[end - start] = '\0';
+                /* Extract path — use stack buffer for typical short paths */
+                size_t path_len = end - start;
+                char path_stack[256];
+                char *path = path_stack;
+                if (path_len >= sizeof(path_stack))
+                    path = (char *)malloc(path_len + 1);
+                memcpy(path, s + start, path_len);
+                path[path_len] = '\0';
 
                 /* Resolve via engine callback */
                 const char *value = ctx->resolve_variable(path, ctx->user_data);
@@ -53,9 +57,8 @@ char *wm_expand_variables_str(const char *s, size_t len,
                     memcpy(result + j, value, vlen);
                     j += vlen;
                 }
-                /* NULL → empty string (nothing appended) */
 
-                free(path);
+                if (path != path_stack) free(path);
                 i = end + 1;
                 continue;
             }

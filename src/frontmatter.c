@@ -17,10 +17,14 @@ static wm_fm_node *node_new(const char *key, const char *value) {
     return n;
 }
 
+/* last_child is tracked per-parse via local variables in the parse functions.
+ * This simple version is used for small trees; parse functions use direct
+ * pointer tracking for O(1) appends. */
 static void node_add_child(wm_fm_node *parent, wm_fm_node *child) {
     if (!parent->children) {
         parent->children = child;
     } else {
+        /* Walk to end — acceptable for small trees (YAML frontmatter is typically < 50 keys) */
         wm_fm_node *last = parent->children;
         while (last->next) last = last->next;
         last->next = child;
@@ -215,30 +219,34 @@ const char *wm_frontmatter_get(const wm_fm_node *root, const char *path) {
         return NULL;
 
     const wm_fm_node *current = root;
-    char *path_copy = strdup(path);
-    char *tok = strtok(path_copy, ".");
+    const char *p = path;
 
-    while (tok && current) {
+    while (*p && current) {
+        /* Find the end of this segment (next '.' or end of string) */
+        const char *dot = p;
+        while (*dot && *dot != '.') dot++;
+        size_t seg_len = dot - p;
+
         /* Search children for matching key */
         const wm_fm_node *child = current->children;
         const wm_fm_node *found = NULL;
         while (child) {
-            if (child->key && strcmp(child->key, tok) == 0) {
+            if (child->key && strlen(child->key) == seg_len &&
+                memcmp(child->key, p, seg_len) == 0) {
                 found = child;
                 break;
             }
             child = child->next;
         }
 
-        if (!found) {
-            free(path_copy);
+        if (!found)
             return NULL;
-        }
 
-        tok = strtok(NULL, ".");
-        if (!tok) {
-            /* This is the final segment — return the value */
-            free(path_copy);
+        /* Advance past the segment (and the dot if present) */
+        p = *dot ? dot + 1 : dot;
+
+        if (!*p) {
+            /* Final segment — return the value */
             return found->value;
         }
 
@@ -246,6 +254,5 @@ const char *wm_frontmatter_get(const wm_fm_node *root, const char *path) {
         current = found;
     }
 
-    free(path_copy);
     return NULL;
 }

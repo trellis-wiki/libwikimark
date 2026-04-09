@@ -70,24 +70,23 @@ static const char *resolve_template(const char *name, const char *args,
     free(path);
     if (!source) return NULL;
 
+    size_t source_len = strlen(source);
+
     /* Parse template frontmatter for inputs */
     size_t body_start = 0;
-    wm_fm_node *tmpl_fm = wm_frontmatter_parse(source, strlen(source), &body_start);
-
-    /* TODO: properly map args to inputs. For now, simple approach:
-     * Parse named args and set them as frontmatter values. */
+    wm_fm_node *tmpl_fm = wm_frontmatter_parse(source, source_len, &body_start);
 
     /* Render the template body through the parser */
     e->depth++;
     wikimark_config config = wikimark_config_default();
     wikimark_context ctx = test_engine_get_context(e);
 
-    /* Temporarily replace frontmatter with template's + args */
+    /* Temporarily replace frontmatter with template's */
     wm_fm_node *saved_fm = e->frontmatter;
     e->frontmatter = tmpl_fm;
 
     char *html = wikimark_render(source + body_start,
-        strlen(source) - body_start, 0, &config, &ctx);
+        source_len - body_start, 0, &config, &ctx);
     e->depth--;
 
     e->frontmatter = saved_fm;
@@ -117,6 +116,7 @@ static const char *resolve_embed(const char *target, void *user_data) {
     wikimark_config config = wikimark_config_default();
     wikimark_context ctx = test_engine_get_context(e);
     char *html = wikimark_render(source, strlen(source), 0, &config, &ctx);
+    /* Note: single strlen call here — source is only used once */
     e->depth--;
     free(source);
 
