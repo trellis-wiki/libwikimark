@@ -350,12 +350,13 @@ static cmark_node *postprocess(cmark_syntax_extension *ext,
     }
     free(nodes);
 
-    /* --- Pass 2: Rewrite wiki-style Markdown links [text](Page) ---
-     * DISABLED: Cannot reliably distinguish wiki targets from standard
-     * relative URLs. All [text](url) links are standard Markdown for now.
-     * Wiki links use [[...]] syntax exclusively.
-     * TODO: Consider a wiki: URI scheme prefix for explicit wiki-style links.
+    /* --- Pass 2: Rewrite wiki-style Markdown links [text](target) ---
+     * In WikiMark, all links without a protocol scheme are wiki page links.
+     * There are no "relative file links" — the wiki namespace IS the context.
+     * Links with schemes (http:, mailto:, etc.), anchors (#), and explicit
+     * paths (/, ./, ../) are left as standard links.
      */
+    rewrite_wiki_style_links(root, mem);
 
     return root;
 }
