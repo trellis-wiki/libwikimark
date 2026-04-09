@@ -54,7 +54,6 @@ typedef struct wikimark_interwiki {
 
 typedef struct wikimark_config {
     const char *base_url;
-    int case_sensitive;
     int bare_bracket_links;
     const wikimark_interwiki *interwiki;
     int interwiki_count;

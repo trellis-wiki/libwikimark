@@ -198,8 +198,7 @@ static cmark_node *make_wikilink_node(cmark_syntax_extension *ext,
         is_interwiki = 1;
     } else {
         /* Standard wiki link — normalize the title */
-        int case_sensitive = config ? config->case_sensitive : 0;
-        url = wikimark_normalize_title(target_buf, case_sensitive, mem);
+        url = wikimark_normalize_title(target_buf, 0, mem);
     }
 
     if (!url) {
@@ -387,6 +386,10 @@ static void process_text_node(cmark_syntax_extension *ext,
  */
 static int is_wiki_url(const char *url) {
     if (!url || !*url)
+        return 0;
+
+    /* Contains a space — from angle-bracket URL, not a wiki page */
+    if (strchr(url, ' '))
         return 0;
 
     /* Starts with # — anchor link */

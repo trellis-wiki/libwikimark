@@ -1,19 +1,24 @@
 /**
  * Page title normalization (WikiMark spec §13).
+ *
+ * Rules:
+ * - Strip leading/trailing whitespace
+ * - Collapse internal whitespace to single underscore
+ * - Replace spaces with underscores
+ * - Preserve case (no first-letter capitalization)
  */
 
 #include "normalize.h"
-#include <ctype.h>
 #include <string.h>
 
 char *wikimark_normalize_title(const char *title, int case_sensitive,
                                cmark_mem *mem) {
+    (void)case_sensitive; /* No longer used — case always preserved */
+
     if (!title || !*title)
         return NULL;
 
     size_t len = strlen(title);
-
-    /* Allocate worst case (same length + null) */
     char *result = (char *)mem->calloc(1, len + 1);
     if (!result)
         return NULL;
@@ -30,30 +35,17 @@ char *wikimark_normalize_title(const char *title, int case_sensitive,
     while (end > src && (end[-1] == ' ' || end[-1] == '\t'))
         end--;
 
-    int first_letter = 1;  /* Track first letter for capitalization */
-    int prev_space = 0;    /* Collapse whitespace */
+    int prev_space = 0;
 
     while (src < end) {
-        if (*src == ' ' || *src == '\t') {
-            if (!prev_space) {
-                *dst++ = '_';
-                prev_space = 1;
-            }
-            src++;
-        } else if (*src == '_') {
-            /* Underscore treated as space */
+        if (*src == ' ' || *src == '\t' || *src == '_') {
             if (!prev_space) {
                 *dst++ = '_';
                 prev_space = 1;
             }
             src++;
         } else {
-            if (first_letter && !case_sensitive && *src >= 'a' && *src <= 'z') {
-                *dst++ = *src - 32;  /* Capitalize */
-            } else {
-                *dst++ = *src;
-            }
-            first_letter = 0;
+            *dst++ = *src;
             prev_space = 0;
             src++;
         }

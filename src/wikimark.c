@@ -52,7 +52,6 @@ wikimark_config wikimark_config_default(void) {
     wikimark_config config;
     memset(&config, 0, sizeof(config));
     config.base_url = "";
-    config.case_sensitive = 0;
     config.bare_bracket_links = 1;
     config.interwiki = NULL;
     config.interwiki_count = 0;
@@ -96,7 +95,7 @@ static char *do_convert(const char *text, size_t len, int options,
         const char *redirect_target = wm_frontmatter_get(frontmatter, "redirect");
         if (redirect_target) {
             char *normalized = wikimark_normalize_title(
-                redirect_target, config ? config->case_sensitive : 0, mem);
+                redirect_target, 0, mem);
             if (normalized) {
                 size_t html_len = strlen(redirect_target) + strlen(normalized) + 100;
                 char *html = (char *)mem->calloc(1, html_len);
