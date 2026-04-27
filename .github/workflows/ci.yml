@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The CMake test target invokes the wikimark spec's run_tests.py via
+# the hardcoded relative path ../wikimark/tests/run_tests.py. We mirror
+# that layout in CI by checking libwikimark out into ./libwikimark/
+# and the wikimark spec into ./wikimark/ — siblings under the workspace.
+
+jobs:
+  build-and-test:
+    name: Build + spec tests (${{ matrix.os }}, ${{ matrix.build_type }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout libwikimark
+        uses: actions/checkout@v4
+        with:
+          path: libwikimark
+          submodules: recursive
+
+      - name: Checkout wikimark spec (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: trellis-wiki/wikimark
+          path: wikimark
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure
+        working-directory: libwikimark
+        run: |
+          mkdir build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ..
+
+      - name: Build
+        working-directory: libwikimark
+        run: cmake --build build --parallel
+
+      - name: Run spec tests
+        working-directory: libwikimark
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    name: ASan + UBSan (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout libwikimark
+        uses: actions/checkout@v4
+        with:
+          path: libwikimark
+          submodules: recursive
+
+      - name: Checkout wikimark spec (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: trellis-wiki/wikimark
+          path: wikimark
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure with sanitizers
+        working-directory: libwikimark
+        env:
+          CFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1"
+          LDFLAGS: "-fsanitize=address,undefined"
+        run: |
+          mkdir build
+          cd build
+          cmake ..
+
+      - name: Build
+        working-directory: libwikimark
+        run: cmake --build build --parallel
+
+      - name: Run spec tests under sanitizers
+        working-directory: libwikimark
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: ctest --test-dir build --output-on-failure

@@ -1,0 +1,13 @@
+---
+inputs:
+  source:
+    required: true
+  property:
+    required: true
+  limit:
+    default: "10"
+---
+<table class="wm-query-result">
+<thead><tr><th>Page</th><th>Capital</th></tr></thead>
+<tbody><tr><td><a href="France">France</a></td><td>Paris</td></tr></tbody>
+</table>

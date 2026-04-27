@@ -1,0 +1,6 @@
+[submodule "third_party/cmark-gfm"]
+	path = third_party/cmark-gfm
+	url = https://github.com/github/cmark-gfm.git
+[submodule "third_party/libyaml"]
+	path = third_party/libyaml
+	url = https://github.com/yaml/libyaml.git

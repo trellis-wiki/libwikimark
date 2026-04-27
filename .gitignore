@@ -1,0 +1,23 @@
+build/
+build-*/
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+.cache/
+.vscode/
+.idea/
+*.swp
+*~
+Testing/
+
+# Fuzz corpus (regenerated via tests/fuzz/seed_corpus.py)
+tests/fuzz/corpus/
+PLAN.md

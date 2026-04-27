@@ -1,0 +1,131 @@
+---
+title: Wiki-Heavy Benchmark Page
+categories:
+  - Benchmarks
+  - Fixtures
+star:
+  name: Sol
+  type: G2V
+  age_gyr: 4.6
+moons:
+  - Luna
+  - Phobos
+  - Deimos
+inputs:
+  planet:
+    default: "Earth"
+    required: false
+  status:
+    default: "inhabited"
+---
+
+# ${title}
+
+This page stress-tests the wiki-link parser by embedding many
+``[[wiki-style]]`` links alongside ordinary markup. A realistic
+encyclopedia-style page tends to have several dozen wiki links per
+screen of content.
+
+## References to other pages
+
+The [[Planet]] [[Earth]] orbits the star [[Sun]] in the
+[[Solar System]], which itself is part of the [[Milky Way]] galaxy.
+Earth's natural satellite is the [[Moon]], and it has two neighbors:
+[[Venus]] inward and [[Mars]] outward. Further out lie [[Jupiter]],
+[[Saturn]], [[Uranus]], and [[Neptune]].
+
+Nearby stars include [[Proxima Centauri]], [[Alpha Centauri]],
+[[Barnard's Star]], [[Wolf 359]], [[Sirius]], [[Epsilon Eridani]],
+[[Tau Ceti]], and [[61 Cygni]]. The nearest galactic group contains
+[[Andromeda Galaxy]], the [[Triangulum Galaxy]], and several
+satellite galaxies of the [[Milky Way]] itself.
+
+## Namespaces and interwiki
+
+Namespaced links: [[Help:Editing]], [[Help:Syntax]], [[Help:Templates]],
+[[Category:Stars]], [[Category:Planets]], [[Category:Moons]],
+[[User:Alice]], [[User:Bob]], [[File:Earth.jpg]], [[File:Moon.jpg]].
+
+Interwiki links: [[wikipedia:Markdown]], [[wikipedia:GitHub Flavored Markdown]],
+[[wikipedia:CommonMark]], [[wikipedia:WikiText]].
+
+## Pandoc-style Markdown links as wiki links
+
+Because WikiMark treats relative-target `[text](page)` links as wiki
+pages, these are all wiki links too:
+[the home page](Main Page), [help](Help:Editing),
+[tutorial](Getting Started),
+[introduction](Introduction to WikiMark),
+[glossary](Glossary), [FAQ](Frequently Asked Questions),
+[changelog](Changelog), [roadmap](Roadmap).
+
+## Sections with references mixed in
+
+The [[Planet]] Earth is the third planet from [[Sun|Sol]]. It has one
+natural satellite, the [[Moon]], and two quasi-satellites. Its surface
+is approximately 71% water, with the remaining land divided into
+continents named [[Africa]], [[Antarctica]], [[Asia]], [[Australia]],
+[[Europe]], [[North America]], and [[South America]].
+
+## Frontmatter variables
+
+Title: ${title}. Star: ${star.name} (${star.type}, ${star.age_gyr} Gyr).
+Primary moon: ${moons.0}. Planet name: ${planet}. Status: ${status}.
+
+## Presentation attributes on images
+
+![A picture](image.jpg){.thumb width=300 height=200}
+![Another](other.jpg){.frameless}
+![Third](third.jpg){.border alt-width=800}
+
+## Semantic annotations
+
+The capital of France is [Paris]|capital of=France|. Brazil's largest
+city is [São Paulo]|city in=Brazil|. Tokyo is [the capital]|capital of=Japan|.
+
+## Callouts
+
+> [!NOTE]
+> This is a standard informational callout. Wiki authors use these
+> extensively for asides.
+
+> [!WARNING]
+> A warning callout. Wiki pages covering hazardous material use
+> these heavily.
+
+> [!TIP]
+> A tip. Tutorial pages have many of these.
+
+## Lists of wiki links
+
+Planets in our solar system, inner to outer:
+
+1. [[Mercury]]
+2. [[Venus]]
+3. [[Earth]]
+4. [[Mars]]
+5. [[Jupiter]]
+6. [[Saturn]]
+7. [[Uranus]]
+8. [[Neptune]]
+
+Notable dwarf planets: [[Pluto]], [[Eris]], [[Haumea]], [[Makemake]],
+[[Ceres]], [[Sedna]], [[Gonggong]], [[Quaoar]], [[Orcus]].
+
+## Tables with wiki links
+
+| Planet         | Moons                  | Atmosphere         |
+|----------------|------------------------|--------------------|
+| [[Mercury]]    | None                   | Trace              |
+| [[Venus]]      | None                   | [[CO2]]            |
+| [[Earth]]      | [[Moon]]               | [[N2]] + [[O2]]    |
+| [[Mars]]       | [[Phobos]], [[Deimos]] | [[CO2]] trace      |
+| [[Jupiter]]    | 95+ incl. [[Io]]       | [[H2]] + [[He]]    |
+| [[Saturn]]     | 146+ incl. [[Titan]]   | [[H2]] + [[He]]    |
+
+## Closing
+
+A long page full of wiki links mirrors what an encyclopedia-style
+page looks like in a real migrated wiki. The parser walks every
+`[[` looking for a closing `]]`, so link density directly affects
+per-render cost.

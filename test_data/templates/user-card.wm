@@ -1,0 +1,8 @@
+---
+inputs:
+  1:
+    required: true
+  role:
+    default: "user"
+---
+<div class="user-card"><strong>${1}</strong> (${role})</div>

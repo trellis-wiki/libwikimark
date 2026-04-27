@@ -1,0 +1,6 @@
+---
+inputs:
+  1:
+    required: true
+---
+Result of outer with ${1}.

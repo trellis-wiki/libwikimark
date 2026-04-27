@@ -1,0 +1,104 @@
+---
+title: Kitchen Sink
+categories: [Benchmarks, Mixed]
+star:
+  name: Sol
+  distance_ly: 0
+inputs:
+  planet:
+    default: "Earth"
+  capital:
+    default: "London"
+---
+
+# ${title}
+
+This page exercises every WikiMark feature in a single document.
+Realistic wiki pages mix prose, structure, wiki links, templates,
+variables, attributes, and annotations — this is the combined case.
+
+## Wiki links and cross-references
+
+See also: [[Earth]], [[Solar System]], [[Milky Way]]. Linked display
+text goes through the GFM link form: [home page](Main Page), as does
+[the category](Category:Benchmarks).
+
+Interwiki: [[wikipedia:Galaxy]], [[wikipedia:Star]].
+
+Section links work the same: [[Earth#Geography]], [[Earth#Biology]].
+
+## Variables and frontmatter
+
+The star is ${star.name} (distance: ${star.distance_ly} ly). Planet:
+${planet}. Capital: ${capital}.
+
+## Templates
+
+Basic: {{greeting}} and {{greeting name="Alice"}}.
+
+With positional: {{greeting "Bob"}}.
+
+Nested in prose: welcome, {{greeting name="visitor"}}. We hope you
+enjoy reading about ${planet}.
+
+## Page embeds
+
+Embedded page content follows:
+
+![[Main Page]]
+
+Section embed:
+
+![[Main Page#History]]
+
+## Images with attributes
+
+![An illustration](illustration.jpg){.thumb width=400 height=300}
+
+Images on their own line produce a `<figure>` wrapper. Inline
+![like this](inline.jpg) does not.
+
+## Semantic annotations
+
+The capital of [France]|country| is [Paris]|capital of=France|. Italy's
+capital is [Rome]|capital of=Italy, population=2873000|.
+
+## Callouts
+
+> [!NOTE]
+> Wiki pages use callouts for asides.
+
+> [!WARNING] Custom Title
+> Callouts can have custom titles overriding the default TYPE.
+
+> [!TIP]
+> Multi-line callouts work too.
+> Second line of the callout.
+
+## Presentation on spans
+
+[Important text]{.emphasis data-priority="high"} can have attribute
+blocks attached. Combined with semantic: [Paris]{.city}|capital of=France|.
+
+## GFM features in the mix
+
+Regular GFM: **bold**, *italic*, `code`, ~~strike~~, [link](https://example.com),
+![img](img.png) inline.
+
+Task list:
+- [x] Implement wiki links
+- [x] Implement templates
+- [ ] Implement quantum entanglement
+
+| Feature | Status |
+|---------|--------|
+| Wiki links | Done |
+| Templates  | Done |
+| Variables  | Done |
+
+## Closing
+
+The kitchen sink exercises every hot path in a single render — this
+is the most pessimistic benchmark case. Realistic pages are usually
+narrower in feature coverage, so real-world renders tend to be
+faster than this benchmark suggests.
