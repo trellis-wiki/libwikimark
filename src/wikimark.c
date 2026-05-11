@@ -210,7 +210,19 @@ static char *do_convert(const char *text, size_t len, int options,
                         /* Interior with sentinel rewrites */
                         for (size_t p = i + 2; p < close; p++) {
                             char c = body[p];
-                            if (c == '[') {
+                            if (c == '<' && p + 3 < close &&
+                                body[p+1] == '!' && body[p+2] == '-' && body[p+3] == '-') {
+                                /* Skip HTML comment inside template args */
+                                size_t end = p + 4;
+                                while (end + 2 < close) {
+                                    if (body[end] == '-' && body[end+1] == '-' && body[end+2] == '>') {
+                                        end += 3; break;
+                                    }
+                                    end++;
+                                }
+                                p = end - 1;
+                                changed = 1;
+                            } else if (c == '[') {
                                 buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x84;
                                 changed = 1;
                             } else if (c == ']') {
