@@ -296,6 +296,34 @@ static char *do_convert(const char *text, size_t len, int options,
                         continue;
                     }
                 }
+                /* Code spans are copied as written: `{{` in code is not a
+                 * template (same matching rule as the variable pass). */
+                if (body[i] == '`') {
+                    size_t ticks = 0;
+                    while (i + ticks < body_len && body[i + ticks] == '`') ticks++;
+                    size_t k = i + ticks, close = (size_t)-1;
+                    while (k < body_len) {
+                        if (body[k] != '`') { k++; continue; }
+                        size_t run = 0;
+                        while (k + run < body_len && body[k + run] == '`') run++;
+                        if (run == ticks) { close = k; break; }
+                        k += run;
+                    }
+                    size_t stop = close == (size_t)-1 ? i + ticks : close + ticks;
+                    while (i < stop) {
+                        /* escapes inside code stay as written; sentinels still
+                         * apply so that restoring them (with the backslash) is exact */
+                        if (body[i] == '\\' && i + 1 < stop && strchr(WM_ESC_CHARS, body[i+1]) && body[i+1]) {
+                            const char *hit = strchr(WM_ESC_CHARS, body[i+1]);
+                            buf[j++] = (char)WM_ESC_SENTINEL_LEAD0;
+                            buf[j++] = (char)WM_ESC_SENTINEL_LEAD1;
+                            buf[j++] = (char)(WM_ESC_SENTINEL_FIRST + (hit - WM_ESC_CHARS));
+                            i += 2; changed = 1; continue;
+                        }
+                        buf[j++] = body[i++];
+                    }
+                    continue;
+                }
                 /* Balanced-template detection: when we see `{{`, scan
                  * forward for the matching `}}` respecting nesting. Only
                  * rewrite the interior if balanced. */
@@ -590,8 +618,23 @@ static char *do_convert(const char *text, size_t len, int options,
     /* Render to HTML */
     char *html = cmark_render_html(doc, options,
                                     cmark_parser_get_syntax_extensions(parser));
-    /* Sentinels inside HTML built by extensions: the bare character. */
-    if (html) wm_esc_restore(html, strlen(html), html, 0);
+    /* Sentinels inside HTML built by extensions: the bare character. Template
+     * bracket sentinels (U+E004/U+E005) left in code or HTML by a template
+     * region that wasn't a template: the brackets. */
+    if (html) {
+        wm_esc_restore(html, strlen(html), html, 0);
+        size_t n = strlen(html), w = 0;
+        for (size_t r = 0; r < n; ) {
+            if (r + 2 < n && (unsigned char)html[r] == 0xEE && (unsigned char)html[r+1] == 0x80 &&
+                ((unsigned char)html[r+2] == 0x84 || (unsigned char)html[r+2] == 0x85)) {
+                html[w++] = (unsigned char)html[r+2] == 0x84 ? '[' : ']';
+                r += 3;
+                continue;
+            }
+            html[w++] = html[r++];
+        }
+        html[w] = '\0';
+    }
 
     cmark_node_free(doc);
     cmark_parser_free(parser);

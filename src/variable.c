@@ -5,6 +5,7 @@
 
 #include "variable.h"
 #include <string.h>
+#include <ctype.h>
 #include <stdlib.h>
 
 char *wm_expand_variables_str(const char *s, size_t len,
@@ -26,36 +27,25 @@ char *wm_expand_variables_str(const char *s, size_t len,
     int in_code = 0; /* Track backtick code spans */
 
     for (size_t i = 0; i < len; ) {
-        /* Track code spans — don't expand variables inside backticks */
+        /* Code spans: copied as written. A run of backticks opens a span
+         * only if a run of the same length closes it; otherwise the run is
+         * literal and scanning goes on after it (as in CommonMark). */
         if (s[i] == '`') {
-            if (j + 1 >= cap) { cap *= 2; void *tmp = realloc(result, cap); if (!tmp) { free(result); return NULL; } result = tmp; }
-            result[j++] = s[i++];
-            /* Count backticks for fenced code */
-            int ticks = 1;
-            while (i < len && s[i] == '`') {
-                if (j + 1 >= cap) { cap *= 2; void *tmp = realloc(result, cap); if (!tmp) { free(result); return NULL; } result = tmp; }
-                result[j++] = s[i++];
-                ticks++;
+            size_t ticks = 0;
+            while (i + ticks < len && s[i + ticks] == '`') ticks++;
+            size_t k = i + ticks, close = (size_t)-1;
+            while (k < len) {
+                if (s[k] != '`') { k++; continue; }
+                size_t run = 0;
+                while (k + run < len && s[k + run] == '`') run++;
+                if (run == ticks) { close = k; break; }
+                k += run;
             }
-            /* Copy until matching backtick sequence */
-            while (i < len) {
-                int match = 1;
-                if (s[i] == '`') {
-                    int count = 0;
-                    size_t check = i;
-                    while (check < len && s[check] == '`') { count++; check++; }
-                    if (count == ticks) {
-                        /* Closing backticks — copy and break */
-                        for (int t = 0; t < ticks; t++) {
-                            if (j + 1 >= cap) { cap *= 2; void *tmp = realloc(result, cap); if (!tmp) { free(result); return NULL; } result = tmp; }
-                            result[j++] = s[i++];
-                        }
-                        break;
-                    }
-                }
-                if (j + 1 >= cap) { cap *= 2; void *tmp = realloc(result, cap); if (!tmp) { free(result); return NULL; } result = tmp; }
-                result[j++] = s[i++];
-            }
+            size_t stop = close == (size_t)-1 ? i + ticks : close + ticks;
+            while (j + (stop - i) + 1 >= cap) { cap *= 2; void *tmp = realloc(result, cap); if (!tmp) { free(result); return NULL; } result = tmp; }
+            memcpy(result + j, s + i, stop - i);
+            j += stop - i;
+            i = stop;
             continue;
         }
 
@@ -65,6 +55,14 @@ char *wm_expand_variables_str(const char *s, size_t len,
             result[j++] = '$';
             result[j++] = '{';
             i += 3;
+            continue;
+        }
+
+        /* Any other backslash escape is copied as a unit (so \\` doesn't open a code span) */
+        if (s[i] == '\\' && i + 1 < len && ispunct((unsigned char)s[i+1])) {
+            if (j + 2 >= cap) { cap *= 2; void *tmp = realloc(result, cap); if (!tmp) { free(result); return NULL; } result = tmp; }
+            result[j++] = s[i++];
+            result[j++] = s[i++];
             continue;
         }
 
