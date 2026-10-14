@@ -234,9 +234,9 @@ static char *do_convert(const char *text, size_t len, int options,
      *
      * Three concerns handled by a single scan:
      *
-     * 1. Escape sequences \[\[ and \{\{ become U+E000 / U+E001 sentinels so
-     *    cmark-gfm doesn't see them as literal brackets. Restored after the
-     *    template / span postprocessors have run.
+     * 1. Escaped [ ] { } | ! become sentinels (see wm_private.h) so no
+     *    WikiMark pass takes them for syntax; code spans are copied as
+     *    written. (\[\[ and \{\{ are two such escapes, one per character.)
      *
      * 2. Unescaped `{{...}}` template calls are detected with balanced-
      *    lookahead. Only when a matching `}}` is found (respecting nesting)
@@ -280,19 +280,6 @@ static char *do_convert(const char *text, size_t len, int options,
         int changed = 0;
         if (buf) {
             for (size_t i = 0; i < body_len; ) {
-                /* Escape handling */
-                if (i + 3 < body_len && body[i] == '\\' && body[i+2] == '\\') {
-                    if (body[i+1] == '[' && body[i+3] == '[') {
-                        buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x80;
-                        buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x80;
-                        i += 4; changed = 1; continue;
-                    }
-                    if (body[i+1] == '{' && body[i+3] == '{') {
-                        buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x81;
-                        buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x81;
-                        i += 4; changed = 1; continue;
-                    }
-                }
                 /* A single escaped modifier character becomes a sentinel
                  * (see WM_ESC_CHARS); any other escape pair is copied as a
                  * unit so that `\\[` stays a backslash and a real `[`. */
