@@ -283,8 +283,47 @@ static char *do_convert(const char *text, size_t len, int options,
                 /* A single escaped modifier character becomes a sentinel
                  * (see WM_ESC_CHARS); any other escape pair is copied as a
                  * unit so that `\\[` stays a backslash and a real `[`. */
+                /* An attribute block ({...} right after ")", "]" or "}"):
+                 * copied as written, except that \" in it becomes a
+                 * sentinel so a quoted value can hold a quote. (\" isn't
+                 * a sentinel elsewhere: raw HTML needs its quotes.) */
+                if (body[i] == '{' && i > 0 && (body[i-1] == ')' || body[i-1] == ']' || body[i-1] == '}')
+                    && !(i + 1 < body_len && body[i+1] == '{')) {
+                    size_t k = i + 1;
+                    int q = 0;
+                    while (k < body_len && body[k] != '\n' && (q || body[k] != '}')) {
+                        if (body[k] == '\\' && k + 1 < body_len) { k += 2; continue; }
+                        if (body[k] == '"') q = !q;
+                        k++;
+                    }
+                    if (k < body_len && body[k] == '}') {
+                        for (size_t p = i; p <= k; p++) {
+                            if (body[p] == '\\' && p + 1 < k && body[p+1] == '"') {
+                                buf[j++] = (char)WM_ESC_LEAD0;
+                                buf[j++] = (char)WM_ESC_LEAD1;
+                                buf[j++] = (char)(WM_ESC_FIRST + (strchr(WM_ESC_CHARS, '"') - WM_ESC_CHARS));
+                                p++; changed = 1;
+                                continue;
+                            }
+                            if (body[p] == '\\' && p + 1 < k) {
+                                const char *hit = strchr(WM_ESC_CHARS, body[p+1]);
+                                if (hit) {
+                                    buf[j++] = (char)WM_ESC_LEAD0;
+                                    buf[j++] = (char)WM_ESC_LEAD1;
+                                    buf[j++] = (char)(WM_ESC_FIRST + (hit - WM_ESC_CHARS));
+                                    p++; changed = 1;
+                                    continue;
+                                }
+                                buf[j++] = body[p++];
+                            }
+                            buf[j++] = body[p];
+                        }
+                        i = k + 1;
+                        continue;
+                    }
+                }
                 if (body[i] == '\\' && i + 1 < body_len) {
-                    const char *hit = strchr(WM_ESC_CHARS, body[i+1]);
+                    const char *hit = body[i+1] == '"' ? NULL : strchr(WM_ESC_CHARS, body[i+1]);
                     if (hit && body[i+1] != '\0') {
                         buf[j++] = (char)WM_ESC_LEAD0;
                         buf[j++] = (char)WM_ESC_LEAD1;
@@ -368,6 +407,11 @@ static char *do_convert(const char *text, size_t len, int options,
                                 changed = 1;
                             } else if (c == ']') {
                                 buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x85;
+                                changed = 1;
+                            } else if (c == '\\') {
+                                /* U+E006: the call is read as written, not
+                                 * through Markdown's backslash escapes */
+                                buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x86;
                                 changed = 1;
                             } else if (c == '\n' || c == '\r') {
                                 buf[j++] = ' ';
@@ -628,8 +672,9 @@ static char *do_convert(const char *text, size_t len, int options,
         size_t n = strlen(html), w = 0;
         for (size_t r = 0; r < n; ) {
             if (r + 2 < n && (unsigned char)html[r] == 0xEE && (unsigned char)html[r+1] == 0x80 &&
-                ((unsigned char)html[r+2] == 0x84 || (unsigned char)html[r+2] == 0x85)) {
-                html[w++] = (unsigned char)html[r+2] == 0x84 ? '[' : ']';
+                (unsigned char)html[r+2] >= 0x84 && (unsigned char)html[r+2] <= 0x86) {
+                unsigned char k = (unsigned char)html[r+2];
+                html[w++] = k == 0x84 ? '[' : k == 0x85 ? ']' : '\\';
                 r += 3;
                 continue;
             }

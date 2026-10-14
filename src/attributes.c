@@ -8,6 +8,7 @@
  */
 
 #include "attributes.h"
+#include "wm_private.h"
 #include "annotation.h"
 #include "scanner.h"
 #include <node.h>
@@ -73,12 +74,15 @@ int wm_parse_attr_block(const char *s, int len, int *pos, wm_parsed_attrs *out) 
                 char *val = NULL;
                 if (p < end && s[p] == '"') {
                     p++;
-                    int vs = p;
+                    /* Quoted value: a backslash escapes the next character (\" and \\). */
+                    val = (char *)malloc(end - p + 1);
+                    int vl = 0;
                     while (p < end && s[p] != '"') {
                         if (s[p] == '\\' && p + 1 < end) p++;
+                        if (val) val[vl++] = s[p];
                         p++;
                     }
-                    val = strndup(s + vs, p - vs);
+                    if (val) val[vl] = '\0';
                     if (p < end) p++; /* skip closing " */
                 } else {
                     int vs = p;
@@ -173,6 +177,33 @@ int wm_parse_annotation_block(const char *s, int len, int *pos, wm_parsed_annota
  * Check if a text node immediately follows a link/image and starts with { or |.
  * If so, parse the modifiers and rebuild the preceding element with attributes.
  */
+/* Text for HTML built here: escape sentinels restored to their character,
+ * then HTML-escaped (& < > "). Returns a malloc'd string. */
+static char *html_text(const char *s) {
+    if (!s) s = "";
+    size_t n = strlen(s);
+    char *plain = (char *)malloc(n + 1);
+    if (!plain) return NULL;
+    size_t pl = wm_esc_restore(s, n, plain, 0);
+    char *out = (char *)malloc(pl * 6 + 1);
+    if (!out) { free(plain); return NULL; }
+    size_t o = 0;
+    for (size_t i = 0; i < pl; i++) {
+        const char *rep = NULL;
+        switch (plain[i]) {
+        case '&': rep = "&amp;"; break;
+        case '<': rep = "&lt;"; break;
+        case '>': rep = "&gt;"; break;
+        case '"': rep = "&quot;"; break;
+        }
+        if (rep) { size_t rl = strlen(rep); memcpy(out + o, rep, rl); o += rl; }
+        else out[o++] = plain[i];
+    }
+    out[o] = '\0';
+    free(plain);
+    return out;
+}
+
 void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
     cmark_iter *iter = cmark_iter_new(root);
     cmark_event_type ev_type;
@@ -289,13 +320,19 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
 
         #define APPEND(s) do { \
             size_t _l = strlen(s); \
+            int _ok = 1; \
             while (hlen + _l >= html_cap) { \
-                html_cap *= 2; \
-                void *_t = realloc(html, html_cap); \
-                if (!_t) break; \
+                void *_t = realloc(html, html_cap * 2); \
+                if (!_t) { _ok = 0; break; } \
                 html = (char *)_t; \
+                html_cap *= 2; \
             } \
-            memcpy(html + hlen, s, _l); hlen += _l; \
+            if (_ok) { memcpy(html + hlen, s, _l); hlen += _l; } \
+        } while(0)
+        /* User text (alt, captions, values, URLs) is HTML-escaped. */
+        #define APPEND_ESC(s) do { \
+            char *_e = html_text(s); \
+            if (_e) { APPEND(_e); free(_e); } \
         } while(0)
 
         /* Standalone images (sole content of paragraph) become <figure>.
@@ -350,82 +387,82 @@ void wm_attach_attributes(cmark_node *root, cmark_mem *mem) {
                 APPEND(" class=\"");
                 for (int j = 0; j < attrs.class_count; j++) {
                     if (j > 0) APPEND(" ");
-                    APPEND(attrs.classes[j]);
+                    APPEND_ESC(attrs.classes[j]);
                 }
                 APPEND("\"");
             }
             /* Semantic annotations on figure */
             if (annot.property) {
-                APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
+                APPEND(" data-wm-property=\""); APPEND_ESC(annot.property); APPEND("\"");
             }
             for (int j = 0; j < annot.kv_count; j++) {
                 APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
-                APPEND(annot.values[j]); APPEND("\"");
+                APPEND_ESC(annot.values[j]); APPEND("\"");
             }
             APPEND(">");
             /* <img> inside figure */
             APPEND("<img src=\"");
-            if (url) APPEND(url);
-            APPEND("\" alt=\""); APPEND(alt); APPEND("\"");
+            if (url) APPEND_ESC(url);
+            APPEND("\" alt=\""); APPEND_ESC(alt); APPEND("\"");
             /* Non-class, non-caption attributes on img */
-            if (attrs.id) { APPEND(" id=\""); APPEND(attrs.id); APPEND("\""); }
+            if (attrs.id) { APPEND(" id=\""); APPEND_ESC(attrs.id); APPEND("\""); }
             for (int j = 0; j < attrs.kv_count; j++) {
                 if (strcmp(attrs.keys[j], "caption") == 0) continue;
                 APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
-                APPEND(attrs.values[j]); APPEND("\"");
+                APPEND_ESC(attrs.values[j]); APPEND("\"");
             }
             APPEND(" />");
             APPEND("<figcaption>");
-            if (caption) APPEND(caption);
+            if (caption) APPEND_ESC(caption);
             APPEND("</figcaption></figure>");
         } else if (is_image) {
             APPEND("<img src=\"");
-            if (url) APPEND(url);
-            APPEND("\" alt=\""); APPEND(alt); APPEND("\"");
+            if (url) APPEND_ESC(url);
+            APPEND("\" alt=\""); APPEND_ESC(alt); APPEND("\"");
             if (attrs.class_count > 0) {
                 APPEND(" class=\"");
                 for (int j = 0; j < attrs.class_count; j++) {
                     if (j > 0) APPEND(" ");
-                    APPEND(attrs.classes[j]);
+                    APPEND_ESC(attrs.classes[j]);
                 }
                 APPEND("\"");
             }
-            if (attrs.id) { APPEND(" id=\""); APPEND(attrs.id); APPEND("\""); }
+            if (attrs.id) { APPEND(" id=\""); APPEND_ESC(attrs.id); APPEND("\""); }
             for (int j = 0; j < attrs.kv_count; j++) {
                 APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
-                APPEND(attrs.values[j]); APPEND("\"");
+                APPEND_ESC(attrs.values[j]); APPEND("\"");
             }
             if (annot.property) {
-                APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
+                APPEND(" data-wm-property=\""); APPEND_ESC(annot.property); APPEND("\"");
             }
             for (int j = 0; j < annot.kv_count; j++) {
                 APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
-                APPEND(annot.values[j]); APPEND("\"");
+                APPEND_ESC(annot.values[j]); APPEND("\"");
             }
             APPEND(" />");
         } else if (is_link) {
             APPEND("<a href=\"");
-            if (url) APPEND(url);
+            if (url) APPEND_ESC(url);
             APPEND("\"");
             if (attrs.class_count > 0) {
                 APPEND(" class=\"");
                 for (int j = 0; j < attrs.class_count; j++) {
                     if (j > 0) APPEND(" ");
-                    APPEND(attrs.classes[j]);
+                    APPEND_ESC(attrs.classes[j]);
                 }
                 APPEND("\"");
             }
-            if (attrs.id) { APPEND(" id=\""); APPEND(attrs.id); APPEND("\""); }
+            if (attrs.id) { APPEND(" id=\""); APPEND_ESC(attrs.id); APPEND("\""); }
             for (int j = 0; j < attrs.kv_count; j++) {
                 APPEND(" "); APPEND(attrs.keys[j]); APPEND("=\"");
-                APPEND(attrs.values[j]); APPEND("\"");
+                APPEND_ESC(attrs.values[j]); APPEND("\"");
             }
             if (annot.property) {
-                APPEND(" data-wm-property=\""); APPEND(annot.property); APPEND("\"");
+                APPEND(" data-wm-property=\""); APPEND_ESC(annot.property); APPEND("\"");
             }
             for (int j = 0; j < annot.kv_count; j++) {
                 APPEND(" data-wm-"); APPEND(annot.keys[j]); APPEND("=\"");
-                APPEND(annot.values[j]); APPEND("\"");
+                APPEND_ESC(annot.values[j]); APPEND("\"");
             }
             APPEND(">");
             if (link_text) APPEND(link_text);

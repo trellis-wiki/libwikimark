@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Restore U+E004 → '[' and U+E005 → ']' sentinels in a buffer.
+/* Restore U+E004 → '[', U+E005 → ']' and U+E006 → '\\' sentinels in a buffer.
  * The preprocessing pass in wikimark.c encodes bracket characters
  * inside template calls as these sentinels so the wikilink
  * postprocessor can't consume them. Run in-place; the sentinel
@@ -23,8 +23,9 @@ static void restore_bracket_sentinels(char *s) {
         if (i + 2 < slen
             && (unsigned char)s[i] == 0xEE
             && (unsigned char)s[i+1] == 0x80
-            && ((unsigned char)s[i+2] == 0x84 || (unsigned char)s[i+2] == 0x85)) {
-            s[rj++] = (unsigned char)s[i+2] == 0x84 ? '[' : ']';
+            && (unsigned char)s[i+2] >= 0x84 && (unsigned char)s[i+2] <= 0x86) {
+            unsigned char k = (unsigned char)s[i+2];
+            s[rj++] = k == 0x84 ? '[' : k == 0x85 ? ']' : '\\';
             i += 3;
         } else {
             s[rj++] = s[i++];

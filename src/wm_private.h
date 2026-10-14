@@ -40,21 +40,21 @@ static inline void *wm_realloc(void **ptr, size_t size) {
 /*
  * Escaped modifier characters.
  *
- * `\[ \] \{ \} \| \!` become sentinels before cmark-gfm parses the body,
+ * `\[ \] \{ \} \| \!` (and `\"` inside an attribute block) become sentinels before cmark-gfm parses the body,
  * so the wiki link, embed, template, span, attribute and annotation passes
  * (which work on text after cmark has resolved escapes) can't mistake an
  * escaped character for syntax. They are restored afterwards: to the bare
  * character in text, URLs and generated HTML; to backslash + character in
  * code and raw HTML, where a backslash escape never applied.
  *
- * The sentinels are U+1CC0..U+1CC5 (Sundanese punctuation): cmark counts
+ * The sentinels are U+1CC0..U+1CC6 (Sundanese punctuation): cmark counts
  * them as punctuation, as it does the characters they stand for, so
  * emphasis next to an escape opens and closes as it should. Real
  * U+1CC0..U+1CC7 in a page are swapped for U+E020..U+E027 first and
  * swapped back at the end.
  */
-static const char WM_ESC_CHARS[] = "[]{}|!";
-#define WM_ESC_COUNT 6
+static const char WM_ESC_CHARS[] = "[]{}|!\"";
+#define WM_ESC_COUNT 7
 #define WM_ESC_LEAD0 0xE1
 #define WM_ESC_LEAD1 0xB3
 #define WM_ESC_FIRST 0x80   /* U+1CC0 */
