@@ -96,10 +96,27 @@ void wm_process_templates_with_context(cmark_node *root, cmark_mem *mem,
                     memcpy(content, lit + tmpl_start, tmpl_len);
                     content[tmpl_len] = '\0';
 
-                    /* Unescape bracket sentinels inserted by the preprocessor
-                     * to shield [[...]] inside template args from the wikilink
-                     * postprocessor. See wikimark.c preprocessing pass. */
+                    /* A placeholder from the preprocessing pass: the call
+                     * as the template gets it. */
+                    const char *written = NULL;
+                    {
+                        wm_parse_state *ps = wm_current_parse_state;
+                        long k = wm_tmpl_index(content, tmpl_len);
+                        if (ps && k >= 0 && (size_t)k < ps->tmpl_count) {
+                            free(content);
+                            content = strdup(ps->tmpl_args[k]);
+                            written = ps->tmpl_orig[k];
+                            if (!content) { pos = close + 2; continue; }
+                        }
+                    }
                     restore_bracket_sentinels(content);
+                    /* For an error display: the call as the template would get it. */
+                    char *display = strdup(content);
+                    /* The name is the first token (leading spaces allowed). */
+                    {
+                        size_t lead = strspn(content, " \t");
+                        if (lead) memmove(content, content + lead, strlen(content + lead) + 1);
+                    }
 
                     /* Split name from args (first space) */
                     char *name = content;
@@ -164,6 +181,7 @@ void wm_process_templates_with_context(cmark_node *root, cmark_mem *mem,
                         cmark_node_insert_after(insert_after, err);
                         insert_after = err;
                         free(content);
+                        free(display);
                         last_end = close + 2;
                         pos = last_end;
                         continue;
@@ -194,16 +212,30 @@ void wm_process_templates_with_context(cmark_node *root, cmark_mem *mem,
                     } else {
                         /* Error indicator — restore bracket sentinels so the
                          * user sees readable {{name arg="[[link]]"}} text. */
-                        size_t full_len = close + 2 - pos;
-                        char *raw = (char *)malloc(full_len + 1);
+                        /* The call as the template would get it (on one line,
+                         * comments dropped), HTML-escaped. */
+                        (void)written;
+                        char *src = display ? display : strdup("");
+                        display = NULL;
+                        if (!src) { free(content); last_end = close + 2; pos = last_end; continue; }
+                        size_t slen = strlen(src);
+                        char *raw = (char *)malloc(slen * 6 + 5);
                         if (!raw) {
+                            free(src);
                             free(content);
                             last_end = close + 2;
                             pos = last_end;
                             continue;
                         }
-                        memcpy(raw, lit + pos, full_len);
-                        raw[full_len] = '\0';
+                        size_t r = 0;
+                        raw[r++] = '{'; raw[r++] = '{';
+                        for (size_t q = 0; q < slen; q++) {
+                            const char *rep = src[q] == '&' ? "&amp;" : src[q] == '<' ? "&lt;" : src[q] == '>' ? "&gt;" : NULL;
+                            if (rep) { size_t rl = strlen(rep); memcpy(raw + r, rep, rl); r += rl; }
+                            else raw[r++] = src[q];
+                        }
+                        raw[r++] = '}'; raw[r++] = '}'; raw[r] = '\0';
+                        free(src);
                         restore_bracket_sentinels(raw);
                         size_t buf_len = strlen(raw) + 50;
                         char *err_buf = (char *)mem->calloc(1, buf_len);
@@ -218,6 +250,7 @@ void wm_process_templates_with_context(cmark_node *root, cmark_mem *mem,
                     }
 
                     free(content);
+                    free(display);
                     last_end = close + 2;
                     pos = last_end;
                     continue;

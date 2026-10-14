@@ -84,6 +84,50 @@ static const char *default_resolve_variable(const char *path, void *user_data) {
 
 /* --- Core render function --- */
 
+/* `s` with each "{{<placeholder>}}" back to "{{" + the call as written + "}}"
+ * (html: HTML-escaped). NULL when there is no placeholder in it. */
+static char *tmpl_unplace(const char *s, char **orig, size_t count, int html) {
+    if (!s || !count || !strstr(s, WM_TMPL_MARK)) return NULL;
+    size_t n = strlen(s), cap = n * 2 + 64, o = 0;
+    char *out = (char *)malloc(cap);
+    if (!out) return NULL;
+    for (size_t i = 0; i < n; ) {
+        if (s[i] == '{' && s[i+1] == '{' && strncmp(s + i + 2, WM_TMPL_MARK, 3) == 0) {
+            const char *m2 = strstr(s + i + 5, WM_TMPL_MARK);
+            if (m2 && m2[3] == '}' && m2[4] == '}') {
+                long k = wm_tmpl_index(s + i + 2, (size_t)(m2 + 3 - (s + i + 2)));
+                if (k >= 0 && (size_t)k < count) {
+                    const char *t = orig[k];
+                    size_t need = o + strlen(t) * 6 + 8;
+                    if (need >= cap) { cap = need * 2; char *nb = (char *)realloc(out, cap); if (!nb) { free(out); return NULL; } out = nb; }
+                    out[o++] = '{'; out[o++] = '{';
+                    for (; *t; t++) {
+                        const char *rep = !html ? NULL : *t == '&' ? "&amp;" : *t == '<' ? "&lt;" : *t == '>' ? "&gt;" : *t == '"' ? "&quot;" : NULL;
+                        if (rep) { size_t rl = strlen(rep); memcpy(out + o, rep, rl); o += rl; }
+                        else out[o++] = *t;
+                    }
+                    out[o++] = '}'; out[o++] = '}';
+                    i = (size_t)(m2 + 5 - s);
+                    continue;
+                }
+            }
+        }
+        if (o + 2 >= cap) { cap *= 2; char *nb = (char *)realloc(out, cap); if (!nb) { free(out); return NULL; } out = nb; }
+        out[o++] = s[i++];
+    }
+    out[o] = '\0';
+    return out;
+}
+
+/* Placeholders in one node string field back to the call as written. */
+static void unplace_field(cmark_node *node, const char *(*get)(cmark_node *),
+                          int (*set)(cmark_node *, const char *)) {
+    wm_parse_state *ps = wm_current_parse_state;
+    if (!ps) return;
+    char *v = tmpl_unplace(get(node), ps->tmpl_orig, ps->tmpl_count, 0);
+    if (v) { set(node, v); free(v); }
+}
+
 /* Sentinel -> literal in one node string field (getter/setter pair). */
 static void restore_field(cmark_node *node, cmark_mem *mem,
                           const char *(*get)(cmark_node *),
@@ -115,6 +159,18 @@ static void wm_restore_escapes(cmark_node *doc, cmark_mem *mem) {
     while ((ev = cmark_iter_next(it)) != CMARK_EVENT_DONE) {
         if (ev != CMARK_EVENT_ENTER) continue;
         cmark_node *n = cmark_iter_get_node(it);
+        switch (n->type) {
+        case CMARK_NODE_TEXT: case CMARK_NODE_CODE: case CMARK_NODE_CODE_BLOCK:
+        case CMARK_NODE_HTML_INLINE: case CMARK_NODE_HTML_BLOCK:
+            unplace_field(n, cmark_node_get_literal, cmark_node_set_literal);
+            break;
+        case CMARK_NODE_LINK: case CMARK_NODE_IMAGE:
+            unplace_field(n, cmark_node_get_url, cmark_node_set_url);
+            unplace_field(n, cmark_node_get_title, cmark_node_set_title);
+            break;
+        default:
+            break;
+        }
         switch (n->type) {
         case CMARK_NODE_TEXT:
             restore_field(n, mem, cmark_node_get_literal, cmark_node_set_literal, 0);
@@ -259,6 +315,8 @@ static char *do_convert(const char *text, size_t len, int options,
      */
     char *preprocessed = NULL;
     char *swapped = NULL;
+    char **tmpl_args = NULL, **tmpl_orig = NULL;
+    size_t tmpl_count = 0, tmpl_cap = 0;
     for (size_t i = 0; i + 2 < body_len; i++) {
         if ((unsigned char)body[i] == WM_ESC_LEAD0 && (unsigned char)body[i+1] == WM_ESC_LEAD1 &&
             (unsigned char)body[i+2] >= WM_ESC_FIRST && (unsigned char)body[i+2] < WM_ESC_FIRST + 8) {
@@ -275,7 +333,8 @@ static char *do_convert(const char *text, size_t len, int options,
     {
         /* Worst case 3 output bytes per input byte (a bracket inside a
          * template becomes a 3-byte sentinel). */
-        char *buf = (char *)malloc(body_len * 3 + 4);
+        size_t bufcap = body_len * 3 + 64;
+        char *buf = (char *)malloc(bufcap);
         size_t j = 0;
         int changed = 0;
         if (buf) {
@@ -384,47 +443,50 @@ static char *do_convert(const char *text, size_t len, int options,
                         k++;
                     }
                     if (close != (size_t)-1) {
-                        /* Emit `{{` verbatim */
-                        buf[j++] = body[i];
-                        buf[j++] = body[i+1];
-                        /* Interior with sentinel rewrites */
-                        for (size_t p = i + 2; p < close; p++) {
-                            char c = body[p];
-                            if (c == '<' && p + 3 < close &&
-                                body[p+1] == '!' && body[p+2] == '-' && body[p+3] == '-') {
-                                /* Skip HTML comment inside template args */
-                                size_t end = p + 4;
-                                while (end + 2 < close) {
-                                    if (body[end] == '-' && body[end+1] == '-' && body[end+2] == '>') {
-                                        end += 3; break;
-                                    }
-                                    end++;
-                                }
-                                p = end - 1;
-                                changed = 1;
-                            } else if (c == '[') {
-                                buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x84;
-                                changed = 1;
-                            } else if (c == ']') {
-                                buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x85;
-                                changed = 1;
-                            } else if (c == '\\') {
-                                /* U+E006: the call is read as written, not
-                                 * through Markdown's backslash escapes */
-                                buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x86;
-                                changed = 1;
-                            } else if (c == '\n' || c == '\r') {
-                                buf[j++] = ' ';
-                                changed = 1;
-                            } else {
-                                buf[j++] = c;
-                            }
+                        /* A balanced call: keep its interior aside, as written
+                         * and as the template gets it (HTML comments dropped,
+                         * newlines as spaces), and leave a placeholder. */
+                        size_t ilen = close - (i + 2);
+                        char *orig = (char *)malloc(ilen + 1);
+                        char *args = (char *)malloc(ilen + 1);
+                        if (tmpl_count >= tmpl_cap) {
+                            size_t ncap = tmpl_cap ? tmpl_cap * 2 : 16;
+                            char **na = (char **)realloc(tmpl_args, ncap * sizeof(char *));
+                            if (na) tmpl_args = na;
+                            char **no = (char **)realloc(tmpl_orig, ncap * sizeof(char *));
+                            if (no) tmpl_orig = no;
+                            if (na && no) tmpl_cap = ncap;
                         }
-                        /* Emit `}}` verbatim */
-                        buf[j++] = body[close];
-                        buf[j++] = body[close+1];
-                        i = close + 2;
-                        continue;
+                        if (orig && args && tmpl_count < tmpl_cap && j + 64 < bufcap) {
+                            memcpy(orig, body + i + 2, ilen);
+                            orig[ilen] = '\0';
+                            size_t a = 0;
+                            for (size_t p = i + 2; p < close; p++) {
+                                char c = body[p];
+                                if (c == '<' && p + 3 < close && body[p+1] == '!' && body[p+2] == '-' && body[p+3] == '-') {
+                                    size_t e = p + 4;
+                                    while (e + 2 < close && !(body[e] == '-' && body[e+1] == '-' && body[e+2] == '>')) e++;
+                                    p = (e + 2 < close) ? e + 2 : close - 1;
+                                    continue;
+                                }
+                                args[a++] = (c == '\n' || c == '\r') ? ' ' : c;
+                            }
+                            args[a] = '\0';
+                            tmpl_args[tmpl_count] = args;
+                            tmpl_orig[tmpl_count] = orig;
+                            j += (size_t)snprintf(buf + j, bufcap - j, "{{" WM_TMPL_MARK "%zu" WM_TMPL_MARK "}}", tmpl_count);
+                            tmpl_count++;
+                            /* the placeholder can be longer than a short call */
+                            if (j + 64 >= bufcap) {
+                                char *nb = (char *)realloc(buf, bufcap * 2);
+                                if (nb) { buf = nb; bufcap *= 2; }
+                            }
+                            i = close + 2;
+                            changed = 1;
+                            continue;
+                        }
+                        free(orig);
+                        free(args);
                     }
                     /* Unbalanced {{: fall through, emit literal. */
                 }
@@ -469,6 +531,12 @@ static char *do_convert(const char *text, size_t len, int options,
     state.context = context;
     state.frontmatter = frontmatter;
     state.expansion_count = 0;
+    state.tmpl_args = tmpl_args;
+    state.tmpl_orig = tmpl_orig;
+    state.tmpl_count = tmpl_count;
+    /* Templates render their bodies with a nested call: put the outer
+     * parse's state back when this one ends. */
+    wm_parse_state *outer_state = wm_current_parse_state;
     wm_current_parse_state = &state;
 
     cmark_parser_feed(parser, body, body_len);
@@ -658,8 +726,8 @@ static char *do_convert(const char *text, size_t len, int options,
         free(to_promote);
     }
 
-    /* Clear per-parse state */
-    wm_current_parse_state = NULL;
+    /* Back to the outer parse's state (NULL at the top level) */
+    wm_current_parse_state = outer_state;
 
     /* Render to HTML */
     char *html = cmark_render_html(doc, options,
@@ -682,7 +750,13 @@ static char *do_convert(const char *text, size_t len, int options,
         }
         html[w] = '\0';
         wm_esc_unswap_real(html, w);
+        /* Placeholders in HTML built by extensions: the call as written. */
+        char *un = tmpl_unplace(html, tmpl_orig, tmpl_count, 1);
+        if (un) { free(html); html = un; }
     }
+    for (size_t t = 0; t < tmpl_count; t++) { free(tmpl_args[t]); free(tmpl_orig[t]); }
+    free(tmpl_args);
+    free(tmpl_orig);
 
     cmark_node_free(doc);
     cmark_parser_free(parser);

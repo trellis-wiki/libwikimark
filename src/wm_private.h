@@ -4,13 +4,36 @@
 #include "wikimark.h"
 #include "frontmatter.h"
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
     wikimark_config config;
     const wikimark_context *context;  /* Engine callbacks (may be NULL) */
     wm_fm_node *frontmatter;          /* Parsed YAML frontmatter (owned by do_convert) */
     int expansion_count;               /* §15 enforcement: template expansions so far */
+    /* Template calls taken out of the body before parsing (see
+     * wm_tmpl_index): what each call hands its template (comments
+     * stripped, newlines as spaces) and its interior as written. */
+    char **tmpl_args;
+    char **tmpl_orig;
+    size_t tmpl_count;
 } wm_parse_state;
+
+/* A template call's interior is replaced by U+E00F <index> U+E00F before
+ * cmark-gfm parses the body, so nothing in it (emphasis, links, escapes,
+ * brackets) is parsed as Markdown. Index of the call if `s` (length n) is
+ * exactly such a placeholder, else -1. */
+#define WM_TMPL_MARK "\xEE\x80\x8F"
+static inline long wm_tmpl_index(const char *s, size_t n) {
+    if (n < 7 || memcmp(s, WM_TMPL_MARK, 3) != 0 || memcmp(s + n - 3, WM_TMPL_MARK, 3) != 0) return -1;
+    long v = 0;
+    for (size_t i = 3; i < n - 3; i++) {
+        if (s[i] < '0' || s[i] > '9') return -1;
+        v = v * 10 + (s[i] - '0');
+        if (v > 100000000) return -1;
+    }
+    return v;
+}
 
 /* Thread-local per-parse state.
  * cmark_syntax_extension_set_private() stores on a global singleton,
