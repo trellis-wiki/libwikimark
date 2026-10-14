@@ -40,34 +40,51 @@ static inline void *wm_realloc(void **ptr, size_t size) {
 /*
  * Escaped modifier characters.
  *
- * `\[ \] \{ \} \|` become private-use sentinels (U+E010..U+E014) before
- * cmark-gfm parses the body, so the wiki link, template, span, attribute
- * and annotation passes (which work on text after cmark has resolved
- * escapes) can't mistake an escaped character for syntax. They are
- * restored afterwards: to the bare character in text, URLs and generated
- * HTML; to backslash + character in code and raw HTML, where a backslash
- * escape never applied.
+ * `\[ \] \{ \} \| \!` become sentinels before cmark-gfm parses the body,
+ * so the wiki link, embed, template, span, attribute and annotation passes
+ * (which work on text after cmark has resolved escapes) can't mistake an
+ * escaped character for syntax. They are restored afterwards: to the bare
+ * character in text, URLs and generated HTML; to backslash + character in
+ * code and raw HTML, where a backslash escape never applied.
+ *
+ * The sentinels are U+1CC0..U+1CC5 (Sundanese punctuation): cmark counts
+ * them as punctuation, as it does the characters they stand for, so
+ * emphasis next to an escape opens and closes as it should. Real
+ * U+1CC0..U+1CC7 in a page are swapped for U+E020..U+E027 first and
+ * swapped back at the end.
  */
-#define WM_ESC_SENTINEL_LEAD0 0xEE
-#define WM_ESC_SENTINEL_LEAD1 0x80
-#define WM_ESC_SENTINEL_FIRST 0x90   /* U+E010 */
-static const char WM_ESC_CHARS[] = "[]{}|";
+static const char WM_ESC_CHARS[] = "[]{}|!";
+#define WM_ESC_COUNT 6
+#define WM_ESC_LEAD0 0xE1
+#define WM_ESC_LEAD1 0xB3
+#define WM_ESC_FIRST 0x80   /* U+1CC0 */
+#define WM_REAL_LEAD0 0xEE
+#define WM_REAL_LEAD1 0x80
+#define WM_REAL_FIRST 0xA0  /* U+E020 */
 
 /* Index in WM_ESC_CHARS if s[0..2] is an escape sentinel, else -1. */
 static inline int wm_esc_sentinel_at(const unsigned char *s, size_t avail) {
-    if (avail < 3 || s[0] != WM_ESC_SENTINEL_LEAD0 || s[1] != WM_ESC_SENTINEL_LEAD1) return -1;
-    int k = (int)s[2] - WM_ESC_SENTINEL_FIRST;
-    return (k >= 0 && k < 5) ? k : -1;
+    if (avail < 3 || s[0] != WM_ESC_LEAD0 || s[1] != WM_ESC_LEAD1) return -1;
+    int k = (int)s[2] - WM_ESC_FIRST;
+    return (k >= 0 && k < WM_ESC_COUNT) ? k : -1;
+}
+
+/* 0..7 if s[0..2] is a swapped-out real U+1CC0..U+1CC7, else -1. */
+static inline int wm_real_at(const unsigned char *s, size_t avail) {
+    if (avail < 3 || s[0] != WM_REAL_LEAD0 || s[1] != WM_REAL_LEAD1) return -1;
+    int k = (int)s[2] - WM_REAL_FIRST;
+    return (k >= 0 && k < 8) ? k : -1;
 }
 
 /* Copy `len` bytes of `in` to `out` replacing sentinels with their
- * character (keep_backslash: with a backslash before it). `out` needs
- * room for `len` + 1 bytes (a sentinel is 3 bytes, its expansion <= 2).
- * Returns the output length; out is NUL-terminated. */
+ * character (keep_backslash: with a backslash before it). `out` may be
+ * `in`; it needs room for
+ * `len` + 1 bytes. Returns the output length; out is NUL-terminated. */
 static inline size_t wm_esc_restore(const char *in, size_t len, char *out, int keep_backslash) {
     size_t j = 0;
     for (size_t i = 0; i < len; ) {
-        int k = wm_esc_sentinel_at((const unsigned char *)in + i, len - i);
+        const unsigned char *u = (const unsigned char *)in + i;
+        int k = wm_esc_sentinel_at(u, len - i);
         if (k >= 0) {
             if (keep_backslash) out[j++] = '\\';
             out[j++] = WM_ESC_CHARS[k];
@@ -80,11 +97,38 @@ static inline size_t wm_esc_restore(const char *in, size_t len, char *out, int k
     return j;
 }
 
+/* Swap U+E020..U+E027 back to the real U+1CC0..U+1CC7 (in place). Only on
+ * the final HTML, after every sentinel is gone. */
+static inline void wm_esc_unswap_real(char *s, size_t len) {
+    for (size_t i = 0; i + 2 < len; i++) {
+        int k = wm_real_at((const unsigned char *)s + i, len - i);
+        if (k >= 0) {
+            s[i] = (char)WM_ESC_LEAD0;
+            s[i+1] = (char)WM_ESC_LEAD1;
+            s[i+2] = (char)(WM_ESC_FIRST + k);
+            i += 2;
+        }
+    }
+}
+
 static inline int wm_esc_has_sentinel(const char *s) {
     if (!s) return 0;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++)
-        if (wm_esc_sentinel_at(p, 3) >= 0 && p[1] && p[2]) return 1;
+        if (wm_esc_sentinel_at(p, 3) >= 0) return 1;
     return 0;
+}
+
+/* Swap real U+1CC0..U+1CC7 in s (in place, same length) for U+E020..U+E027. */
+static inline void wm_esc_swap_real(char *s, size_t len) {
+    for (size_t i = 0; i + 2 < len; i++) {
+        unsigned char *u = (unsigned char *)s + i;
+        if (u[0] == WM_ESC_LEAD0 && u[1] == WM_ESC_LEAD1 && u[2] >= WM_ESC_FIRST && u[2] < WM_ESC_FIRST + 8) {
+            u[2] = (unsigned char)(WM_REAL_FIRST + (u[2] - WM_ESC_FIRST));
+            u[0] = WM_REAL_LEAD0;
+            u[1] = WM_REAL_LEAD1;
+            i += 2;
+        }
+    }
 }
 
 #endif

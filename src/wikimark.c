@@ -258,6 +258,20 @@ static char *do_convert(const char *text, size_t len, int options,
      *    the arg parser already treats any whitespace as a separator.
      */
     char *preprocessed = NULL;
+    char *swapped = NULL;
+    for (size_t i = 0; i + 2 < body_len; i++) {
+        if ((unsigned char)body[i] == WM_ESC_LEAD0 && (unsigned char)body[i+1] == WM_ESC_LEAD1 &&
+            (unsigned char)body[i+2] >= WM_ESC_FIRST && (unsigned char)body[i+2] < WM_ESC_FIRST + 8) {
+            swapped = (char *)malloc(body_len + 1);
+            if (swapped) {
+                memcpy(swapped, body, body_len);
+                swapped[body_len] = '\0';
+                wm_esc_swap_real(swapped, body_len);
+                body = swapped;
+            }
+            break;
+        }
+    }
     {
         /* Worst case 3 output bytes per input byte (a bracket inside a
          * template becomes a 3-byte sentinel). */
@@ -285,9 +299,9 @@ static char *do_convert(const char *text, size_t len, int options,
                 if (body[i] == '\\' && i + 1 < body_len) {
                     const char *hit = strchr(WM_ESC_CHARS, body[i+1]);
                     if (hit && body[i+1] != '\0') {
-                        buf[j++] = (char)WM_ESC_SENTINEL_LEAD0;
-                        buf[j++] = (char)WM_ESC_SENTINEL_LEAD1;
-                        buf[j++] = (char)(WM_ESC_SENTINEL_FIRST + (hit - WM_ESC_CHARS));
+                        buf[j++] = (char)WM_ESC_LEAD0;
+                        buf[j++] = (char)WM_ESC_LEAD1;
+                        buf[j++] = (char)(WM_ESC_FIRST + (hit - WM_ESC_CHARS));
                         i += 2; changed = 1; continue;
                     }
                     if (cmark_ispunct((unsigned char)body[i+1])) {
@@ -315,9 +329,9 @@ static char *do_convert(const char *text, size_t len, int options,
                          * apply so that restoring them (with the backslash) is exact */
                         if (body[i] == '\\' && i + 1 < stop && strchr(WM_ESC_CHARS, body[i+1]) && body[i+1]) {
                             const char *hit = strchr(WM_ESC_CHARS, body[i+1]);
-                            buf[j++] = (char)WM_ESC_SENTINEL_LEAD0;
-                            buf[j++] = (char)WM_ESC_SENTINEL_LEAD1;
-                            buf[j++] = (char)(WM_ESC_SENTINEL_FIRST + (hit - WM_ESC_CHARS));
+                            buf[j++] = (char)WM_ESC_LEAD0;
+                            buf[j++] = (char)WM_ESC_LEAD1;
+                            buf[j++] = (char)(WM_ESC_FIRST + (hit - WM_ESC_CHARS));
                             i += 2; changed = 1; continue;
                         }
                         buf[j++] = body[i++];
@@ -430,6 +444,7 @@ static char *do_convert(const char *text, size_t len, int options,
     cmark_node *doc = cmark_parser_finish(parser);
 
     if (preprocessed) free(preprocessed);
+    if (swapped) free(swapped);
 
     /* === Phase 4: Post-parse processing === */
     /* The wikilink postprocess handles [[...]], ![[...]], wiki-style links,
@@ -634,6 +649,7 @@ static char *do_convert(const char *text, size_t len, int options,
             html[w++] = html[r++];
         }
         html[w] = '\0';
+        wm_esc_unswap_real(html, w);
     }
 
     cmark_node_free(doc);
