@@ -84,6 +84,99 @@ static const char *default_resolve_variable(const char *path, void *user_data) {
 
 /* --- Core render function --- */
 
+/* Sentinel -> literal in one node string field (getter/setter pair). */
+static void restore_field(cmark_node *node, cmark_mem *mem,
+                          const char *(*get)(cmark_node *),
+                          int (*set)(cmark_node *, const char *),
+                          int keep_backslash) {
+    const char *v = get(node);
+    if (!wm_esc_has_sentinel(v)) return;
+    size_t len = strlen(v);
+    char *out = (char *)mem->calloc(1, len + 1);
+    wm_esc_restore(v, len, out, keep_backslash);
+    set(node, out);
+    mem->free(out);
+}
+
+static int in_table_cell(cmark_node *node) {
+    for (cmark_node *p = cmark_node_parent(node); p; p = cmark_node_parent(p)) {
+        const char *t = cmark_node_get_type_string(p);
+        if (t && strcmp(t, "table_cell") == 0) return 1;
+    }
+    return 0;
+}
+
+/* Text, URLs and titles get the bare character; code and raw HTML get the
+ * backslash back, since escapes never applied there. In a table cell an
+ * escaped pipe is the bare pipe even in code (GFM unescapes \| per cell). */
+static void wm_restore_escapes(cmark_node *doc, cmark_mem *mem) {
+    cmark_iter *it = cmark_iter_new(doc);
+    cmark_event_type ev;
+    while ((ev = cmark_iter_next(it)) != CMARK_EVENT_DONE) {
+        if (ev != CMARK_EVENT_ENTER) continue;
+        cmark_node *n = cmark_iter_get_node(it);
+        switch (n->type) {
+        case CMARK_NODE_TEXT:
+            restore_field(n, mem, cmark_node_get_literal, cmark_node_set_literal, 0);
+            break;
+        case CMARK_NODE_CODE: {
+            const char *v = cmark_node_get_literal(n);
+            if (!wm_esc_has_sentinel(v)) break;
+            if (in_table_cell(n)) {
+                /* \| -> |, other sentinels keep their backslash */
+                size_t len = strlen(v);
+                char *out = (char *)mem->calloc(1, 2 * len + 1);
+                size_t j = 0;
+                for (size_t i = 0; i < len; ) {
+                    int k = wm_esc_sentinel_at((const unsigned char *)v + i, len - i);
+                    if (k >= 0) {
+                        if (WM_ESC_CHARS[k] != '|') out[j++] = '\\';
+                        out[j++] = WM_ESC_CHARS[k];
+                        i += 3;
+                    } else {
+                        out[j++] = v[i++];
+                    }
+                }
+                cmark_node_set_literal(n, out);
+                mem->free(out);
+            } else {
+                restore_field(n, mem, cmark_node_get_literal, cmark_node_set_literal, 1);
+            }
+            break;
+        }
+        case CMARK_NODE_CODE_BLOCK:
+            restore_field(n, mem, cmark_node_get_literal, cmark_node_set_literal, 1);
+            restore_field(n, mem, cmark_node_get_fence_info, cmark_node_set_fence_info, 0);
+            break;
+        case CMARK_NODE_HTML_INLINE:
+        case CMARK_NODE_HTML_BLOCK:
+            restore_field(n, mem, cmark_node_get_literal, cmark_node_set_literal, 1);
+            break;
+        case CMARK_NODE_LINK:
+        case CMARK_NODE_IMAGE: {
+            /* An autolink <...> (its text is its URL) never processed
+             * escapes: keep the backslashes in both. */
+            cmark_node *child = cmark_node_first_child(n);
+            const char *url = cmark_node_get_url(n);
+            const char *txt = child && child->type == CMARK_NODE_TEXT && !cmark_node_next(child)
+                ? cmark_node_get_literal(child) : NULL;
+            if (n->type == CMARK_NODE_LINK && url && txt && wm_esc_has_sentinel(url) &&
+                (strcmp(url, txt) == 0 || (strncmp(url, "mailto:", 7) == 0 && strcmp(url + 7, txt) == 0))) {
+                restore_field(n, mem, cmark_node_get_url, cmark_node_set_url, 1);
+                restore_field(child, mem, cmark_node_get_literal, cmark_node_set_literal, 1);
+                break;
+            }
+            restore_field(n, mem, cmark_node_get_url, cmark_node_set_url, 0);
+            restore_field(n, mem, cmark_node_get_title, cmark_node_set_title, 0);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    cmark_iter_free(it);
+}
+
 static char *do_convert(const char *text, size_t len, int options,
                         const wikimark_config *config,
                         const wikimark_context *context) {
@@ -166,7 +259,9 @@ static char *do_convert(const char *text, size_t len, int options,
      */
     char *preprocessed = NULL;
     {
-        char *buf = (char *)malloc(body_len * 3 / 2 + 4);
+        /* Worst case 3 output bytes per input byte (a bracket inside a
+         * template becomes a 3-byte sentinel). */
+        char *buf = (char *)malloc(body_len * 3 + 4);
         size_t j = 0;
         int changed = 0;
         if (buf) {
@@ -182,6 +277,23 @@ static char *do_convert(const char *text, size_t len, int options,
                         buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x81;
                         buf[j++] = (char)0xEE; buf[j++] = (char)0x80; buf[j++] = (char)0x81;
                         i += 4; changed = 1; continue;
+                    }
+                }
+                /* A single escaped modifier character becomes a sentinel
+                 * (see WM_ESC_CHARS); any other escape pair is copied as a
+                 * unit so that `\\[` stays a backslash and a real `[`. */
+                if (body[i] == '\\' && i + 1 < body_len) {
+                    const char *hit = strchr(WM_ESC_CHARS, body[i+1]);
+                    if (hit && body[i+1] != '\0') {
+                        buf[j++] = (char)WM_ESC_SENTINEL_LEAD0;
+                        buf[j++] = (char)WM_ESC_SENTINEL_LEAD1;
+                        buf[j++] = (char)(WM_ESC_SENTINEL_FIRST + (hit - WM_ESC_CHARS));
+                        i += 2; changed = 1; continue;
+                    }
+                    if (cmark_ispunct((unsigned char)body[i+1])) {
+                        buf[j++] = body[i++];
+                        buf[j++] = body[i++];
+                        continue;
                     }
                 }
                 /* Balanced-template detection: when we see `{{`, scan
@@ -365,6 +477,9 @@ static char *do_convert(const char *text, size_t len, int options,
     wm_attach_attributes(doc, mem);
     wm_attach_annotations(doc, mem);
 
+    /* Restore escaped modifier characters (see wm_private.h) */
+    wm_restore_escapes(doc, mem);
+
     /* Single AST walk to collect both standalone images (for figure wrapping)
      * and block-level HTML_INLINE nodes (for promotion out of paragraphs). */
     {
@@ -475,6 +590,8 @@ static char *do_convert(const char *text, size_t len, int options,
     /* Render to HTML */
     char *html = cmark_render_html(doc, options,
                                     cmark_parser_get_syntax_extensions(parser));
+    /* Sentinels inside HTML built by extensions: the bare character. */
+    if (html) wm_esc_restore(html, strlen(html), html, 0);
 
     cmark_node_free(doc);
     cmark_parser_free(parser);

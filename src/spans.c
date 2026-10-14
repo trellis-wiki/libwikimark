@@ -7,6 +7,7 @@
 
 #include "spans.h"
 #include "attributes.h"
+#include "wm_private.h"
 #include <node.h>
 #include <string.h>
 #include <stdlib.h>
@@ -105,11 +106,29 @@ static char *build_span_html(const char *text, int text_len,
     char *open = build_span_open_tag(attrs, annot);
     if (!open) return NULL;
 
-    size_t cap = strlen(open) + text_len + 16;
+    /* The span's text is plain text: restore escaped characters and
+     * HTML-escape it (6 bytes per character at most, for &quot;). */
+    char *plain = (char *)malloc((size_t)text_len + 1);
+    if (!plain) { free(open); return NULL; }
+    size_t plen = wm_esc_restore(text, (size_t)text_len, plain, 0);
+    size_t cap = strlen(open) + plen * 6 + 16;
     char *html = (char *)malloc(cap);
-    if (!html) { free(open); return NULL; }
-    snprintf(html, cap, "%s%.*s</span>", open, text_len, text);
+    if (!html) { free(open); free(plain); return NULL; }
+    size_t n = (size_t)snprintf(html, cap, "%s", open);
+    for (size_t i = 0; i < plen; i++) {
+        const char *rep = NULL;
+        switch (plain[i]) {
+        case '&': rep = "&amp;"; break;
+        case '<': rep = "&lt;"; break;
+        case '>': rep = "&gt;"; break;
+        case '"': rep = "&quot;"; break;
+        }
+        if (rep) { size_t rl = strlen(rep); memcpy(html + n, rep, rl); n += rl; }
+        else html[n++] = plain[i];
+    }
+    memcpy(html + n, "</span>", 8);
     free(open);
+    free(plain);
     return html;
 }
 
@@ -156,10 +175,38 @@ static int try_parse_span(const char *s, int len, int pos, char **html_out) {
  * Try to find a multi-node span: [text with **formatting**]{.class}
  * where cmark split the content across multiple AST nodes.
  */
+/* Nodes removed from the tree during the pass. They are unlinked at once
+ * and freed only after the pass, since the pass still holds pointers to
+ * text nodes it collected up front. */
+typedef struct { cmark_node **items; int count, cap; } dead_list;
+
+static void retire(dead_list *dead, cmark_node *node) {
+    cmark_node_unlink(node);
+    if (dead->count >= dead->cap) {
+        int cap = dead->cap ? dead->cap * 2 : 16;
+        cmark_node **tmp = realloc(dead->items, cap * sizeof(cmark_node *));
+        if (!tmp) return;  /* leak rather than risk a use-after-free */
+        dead->items = tmp;
+        dead->cap = cap;
+    }
+    dead->items[dead->count++] = node;
+}
+
+static int is_retired(const dead_list *dead, const cmark_node *node) {
+    for (int i = 0; i < dead->count; i++)
+        if (dead->items[i] == node) return 1;
+    return 0;
+}
+
 static int try_multinode_span(cmark_node *text_node, int bracket_pos,
-                               cmark_mem *mem) {
-    const char *lit = cmark_node_get_literal(text_node);
+                               cmark_mem *mem, dead_list *dead) {
+    /* Our own copy: setting the node's literal below frees the original. */
+    const char *orig = cmark_node_get_literal(text_node);
+    if (!orig) return 0;
+    char *lit = (char *)malloc(strlen(orig) + 1);
     if (!lit) return 0;
+    strcpy(lit, orig);
+    int result = 0;
 
     /* Walk forward through siblings looking for ]{ or ]| in a text node */
     cmark_node *sibling = cmark_node_next(text_node);
@@ -183,9 +230,15 @@ static int try_multinode_span(cmark_node *text_node, int bracket_pos,
         sibling = cmark_node_next(sibling);
     }
 
-    if (!close_node) return 0;
+    if (!close_node) goto done;
 
-    const char *close_lit = cmark_node_get_literal(close_node);
+    char *close_lit = NULL;
+    {
+        const char *cl = cmark_node_get_literal(close_node);
+        close_lit = (char *)malloc(strlen(cl) + 1);
+        if (!close_lit) goto done;
+        strcpy(close_lit, cl);
+    }
     int close_len = (int)strlen(close_lit);
 
     /* Parse modifiers using shared parsers */
@@ -198,13 +251,14 @@ static int try_multinode_span(cmark_node *text_node, int bracket_pos,
     if (p <= close_bracket_pos + 1) {
         wm_free_attrs(&attrs);
         wm_free_annotation(&annot);
-        return 0;
+        free(close_lit);
+        goto done;
     }
 
     char *open_tag = build_span_open_tag(&attrs, &annot);
     wm_free_attrs(&attrs);
     wm_free_annotation(&annot);
-    if (!open_tag) return 0;
+    if (!open_tag) { free(close_lit); goto done; }
 
     /* Restructure the AST:
      * 1. Trim "[" from text_node
@@ -269,15 +323,19 @@ static int try_multinode_span(cmark_node *text_node, int bracket_pos,
             mem->free(remaining);
         }
     } else {
-        cmark_node_free(close_node);
+        retire(dead, close_node);
     }
 
     if (bracket_pos == 0) {
-        cmark_node_free(text_node);
+        retire(dead, text_node);
     }
 
     free(open_tag);
-    return 1;
+    free(close_lit);
+    result = 1;
+done:
+    free(lit);
+    return result;
 }
 
 void wm_process_spans(cmark_node *root, cmark_mem *mem) {
@@ -287,6 +345,7 @@ void wm_process_spans(cmark_node *root, cmark_mem *mem) {
     cmark_node **nodes = NULL;
     int count = 0, cap = 0;
     int inside_link = 0;
+    dead_list dead = {NULL, 0, 0};
 
     while ((ev_type = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
         cmark_node *node = cmark_iter_get_node(iter);
@@ -311,6 +370,7 @@ void wm_process_spans(cmark_node *root, cmark_mem *mem) {
     cmark_iter_free(iter);
 
     for (int i = 0; i < count; i++) {
+        if (is_retired(&dead, nodes[i])) continue;
         const char *lit = cmark_node_get_literal(nodes[i]);
         if (!lit) continue;
         int len = (int)strlen(lit);
@@ -345,7 +405,25 @@ void wm_process_spans(cmark_node *root, cmark_mem *mem) {
                     pos = end;
                     continue;
                 }
-                if (try_multinode_span(nodes[i], pos, mem)) {
+                if (found == 1) {
+                    /* Spans already split this node: hand the rest of
+                     * the text to the multi-node search as its own node. */
+                    cmark_node *rest = cmark_node_new_with_mem(CMARK_NODE_TEXT, mem);
+                    char *t = (char *)mem->calloc(1, len - last_end + 1);
+                    if (t) {
+                        memcpy(t, lit + last_end, len - last_end);
+                        cmark_node_set_literal(rest, t);
+                        mem->free(t);
+                    }
+                    cmark_node_insert_after(insert_after, rest);
+                    if (try_multinode_span(rest, pos - last_end, mem, &dead)) {
+                        retire(&dead, nodes[i]);
+                        found = 2;
+                        break;
+                    }
+                    cmark_node_unlink(rest);
+                    cmark_node_free(rest);
+                } else if (try_multinode_span(nodes[i], pos, mem, &dead)) {
                     found = 2;
                     break;
                 }
@@ -368,9 +446,11 @@ void wm_process_spans(cmark_node *root, cmark_mem *mem) {
                 cmark_node_insert_after(insert_after, after);
             }
             if (last_end > 0) {
-                cmark_node_free(nodes[i]);
+                retire(&dead, nodes[i]);
             }
         }
     }
     free(nodes);
+    for (int i = 0; i < dead.count; i++) cmark_node_free(dead.items[i]);
+    free(dead.items);
 }
